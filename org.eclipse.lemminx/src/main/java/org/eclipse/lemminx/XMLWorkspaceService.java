@@ -97,6 +97,7 @@ public class XMLWorkspaceService implements WorkspaceService, IXMLCommandService
 					log.fine("Removing workspace folder: " + folder.getUri());
 				}
 				xmlLanguageServer.removeWorkspaceSchema(folder.getUri());
+				xmlLanguageServer.removeWorkspaceProjectContext(folder.getUri());
 				hasSchemaChanges = true;
 			}
 		}
@@ -109,6 +110,8 @@ public class XMLWorkspaceService implements WorkspaceService, IXMLCommandService
 				} catch (Exception e) {
 					log.log(Level.SEVERE, "Failed to copy XSD files for workspace folder: " + folder.getUri() + ". Error: " + e.getMessage());
 				}
+				String projectPath = org.eclipse.lemminx.customservice.synapse.utils.Utils.getAbsolutePath(folder.getUri());
+				xmlLanguageServer.addWorkspaceProjectContext(folder.getUri(), projectPath);
 			}
 		}
 		if (hasSchemaChanges) {
@@ -123,9 +126,21 @@ public class XMLWorkspaceService implements WorkspaceService, IXMLCommandService
 		List<FileEvent> changes = params.getChanges();
 		for (FileEvent change : changes) {
 			if (change.getUri().contains(Constant.INBOUND_CONNECTORS_DIR) && change.getUri().contains(".zip")) {
-				((SynapseLanguageService) xmlLanguageServer.getSynapseLanguageService()).updateInboundConnectors();
+				org.eclipse.lemminx.customservice.synapse.ProjectContext context = xmlLanguageServer
+						.getWorkspaceManager().getProjectForDocument(change.getUri());
+				if (context != null) {
+					context.updateInboundConnectors();
+				} else {
+					((SynapseLanguageService) xmlLanguageServer.getSynapseLanguageService()).updateInboundConnectors();
+				}
 			} else if (change.getUri().contains(Constant.CONNECTORS) && change.getUri().contains(".zip")) {
-				((SynapseLanguageService) xmlLanguageServer.getSynapseLanguageService()).updateConnectors();
+				org.eclipse.lemminx.customservice.synapse.ProjectContext context = xmlLanguageServer
+						.getWorkspaceManager().getProjectForDocument(change.getUri());
+				if (context != null) {
+					context.updateConnectors();
+				} else {
+					((SynapseLanguageService) xmlLanguageServer.getSynapseLanguageService()).updateConnectors();
+				}
 			} else {
 				// LSP URIs use '/', but normalize defensively so a backslash path also matches on Windows.
 				if (change.getUri().replace('\\', '/').contains("src/main/wso2mi")) {

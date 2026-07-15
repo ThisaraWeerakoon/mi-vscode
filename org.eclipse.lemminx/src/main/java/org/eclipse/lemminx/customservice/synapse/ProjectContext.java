@@ -24,6 +24,7 @@ import org.eclipse.lemminx.customservice.synapse.connectors.ConnectionHandler;
 import org.eclipse.lemminx.customservice.synapse.connectors.ConnectorHolder;
 import org.eclipse.lemminx.customservice.synapse.connectors.NewProjectConnectorLoader;
 import org.eclipse.lemminx.customservice.synapse.connectors.OldProjectConnectorLoader;
+import org.eclipse.lemminx.customservice.synapse.connectors.SchemaGenerate;
 import org.eclipse.lemminx.customservice.synapse.expression.ExpressionHelperProvider;
 import org.eclipse.lemminx.customservice.synapse.inbound.conector.InboundConnectorHolder;
 import org.eclipse.lemminx.customservice.synapse.mediatorService.MediatorHandler;
@@ -418,6 +419,39 @@ public class ProjectContext {
     public MediatorFactoryFinder getMediatorFactory() {
         checkInitialized();
         return mediatorFactory;
+    }
+
+    // -------------------------------------------------------------------------
+    // Connector refresh — invoked when this project's connector/inbound .zip
+    // files change on disk.
+    // -------------------------------------------------------------------------
+
+    /**
+     * Reloads this project's outbound connectors from disk, refreshes its mediator
+     * descriptor list, and regenerates {@code connectors.xsd} into this project's own
+     * {@link #synapseXsdPath}. Scoped entirely to this context's {@link #connectorHolder},
+     * so it never affects any other open project.
+     *
+     * @throws IllegalStateException if {@link #initProject} has not been called
+     */
+    public void updateConnectors() {
+        checkInitialized();
+        connectorLoader.loadConnector();
+        if (mediatorHandler.isInitialized()) {
+            mediatorHandler.reloadMediatorList(projectServerVersion);
+        }
+        String connectorPath = synapseXsdPath.resolve("mediators").resolve("connectors.xsd").toString();
+        SchemaGenerate.generate(connectorHolder, connectorPath);
+    }
+
+    /**
+     * Reloads this project's inbound connectors from disk.
+     *
+     * @throws IllegalStateException if {@link #initProject} has not been called
+     */
+    public void updateInboundConnectors() {
+        checkInitialized();
+        inboundConnectorHolder.getCustomInboundConnectors();
     }
 
     // -------------------------------------------------------------------------

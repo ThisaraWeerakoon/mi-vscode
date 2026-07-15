@@ -1247,6 +1247,11 @@ public class SynapseLanguageService implements ISynapseLanguageService {
         return extensionPath;
     }
 
+    public String getMiServerPath() {
+
+        return miServerPath;
+    }
+
     public Path getSynapseXSDPath() {
 
         return synapseXSDPath;

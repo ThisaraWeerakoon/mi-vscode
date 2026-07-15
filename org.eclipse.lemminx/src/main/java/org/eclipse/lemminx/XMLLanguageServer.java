@@ -44,6 +44,9 @@ import org.eclipse.lemminx.customservice.ISynapseLanguageService;
 import org.eclipse.lemminx.customservice.SynapseLanguageClientAPI;
 import org.eclipse.lemminx.customservice.XMLLanguageClientAPI;
 import org.eclipse.lemminx.customservice.XMLLanguageServerAPI;
+import org.eclipse.lemminx.customservice.synapse.ProjectContext;
+import org.eclipse.lemminx.customservice.synapse.WorkspaceManager;
+import org.eclipse.lemminx.customservice.synapse.utils.Constant;
 import org.eclipse.lemminx.customservice.synapse.utils.Utils;
 import org.eclipse.lemminx.dom.DOMDocument;
 import org.eclipse.lemminx.extensions.contentmodel.settings.ContentModelSettings;
@@ -104,6 +107,7 @@ public class XMLLanguageServer implements ProcessLanguageServer, XMLLanguageServ
 	private XMLCapabilityManager capabilityManager;
 	private TelemetryManager telemetryManager;
 	private final SynapseLanguageService synapseLanguageService;
+	private final WorkspaceManager workspaceManager = new WorkspaceManager();
 	private Map<String, Path> workspaceSchemas = new HashMap<>();
 	private Object lastKnownInitOptions = null;
 	public XMLLanguageServer() {
@@ -183,7 +187,84 @@ public class XMLLanguageServer implements ProcessLanguageServer, XMLLanguageServ
 				capabilityManager.getClientCapabilities(), xmlTextDocumentService.isIncrementalSupport());
 
 		synapseLanguageService.init(params.getRootPath(), xmlSettings,languageClient);
+		registerWorkspaceProjects(params);
 		return CompletableFuture.completedFuture(new InitializeResult(nonDynamicServerCapabilities));
+	}
+
+	/**
+	 * Builds and registers a {@link ProjectContext} in the {@link WorkspaceManager} for every
+	 * workspace folder that is an MI project. Falls back to {@code params.getRootPath()} for
+	 * older, single-root-only clients that don't send {@code workspaceFolders}.
+	 *
+	 * <p>This runs alongside the existing single-project {@code synapseLanguageService.init(...)}
+	 * bridge (kept until the facade dispatches per request) so multi-root projects are ready to be
+	 * resolved once that dispatch work lands.
+	 */
+	private void registerWorkspaceProjects(InitializeParams params) {
+		String miServerPath = synapseLanguageService.getMiServerPath();
+		java.util.List<org.eclipse.lsp4j.WorkspaceFolder> folders = params.getWorkspaceFolders();
+		if (folders != null && !folders.isEmpty()) {
+			for (org.eclipse.lsp4j.WorkspaceFolder folder : folders) {
+				addProjectContext(folder.getUri(), Utils.getAbsolutePath(folder.getUri()), miServerPath);
+			}
+		} else if (params.getRootPath() != null) {
+			String rootPath = params.getRootPath();
+			String rootUri = Path.of(rootPath).toUri().toString();
+			if (rootUri.endsWith("/")) {
+				rootUri = rootUri.substring(0, rootUri.length() - 1);
+			}
+			addProjectContext(rootUri, rootPath, miServerPath);
+		}
+	}
+
+	/**
+	 * Creates and registers a single {@link ProjectContext}, skipping folders that aren't MI
+	 * projects (no {@code pom.xml}/{@code src}).
+	 *
+	 * @param registryUri  the URI to key this project by in {@link WorkspaceManager} (matches the
+	 *                     format of document URIs, for future longest-prefix resolution)
+	 * @param projectPath  the absolute filesystem path of the project root
+	 * @param miServerPath the local MI server installation path
+	 */
+	private void addProjectContext(String registryUri, String projectPath, String miServerPath) {
+		if (!Utils.isValidProject(projectPath)) {
+			return;
+		}
+		try {
+			boolean isLegacyProject = Utils.isLegacyProject(projectPath);
+			String projectServerVersion = Utils.getServerVersion(projectPath, Constant.DEFAULT_MI_VERSION);
+			ProjectContext context = new ProjectContext(projectPath, isLegacyProject, projectServerVersion);
+			context.initProject(miServerPath, languageClient);
+			workspaceManager.addProject(registryUri, context);
+		} catch (Exception e) {
+			LOGGER.log(Level.SEVERE, "Failed to initialize ProjectContext for: " + projectPath, e);
+		}
+	}
+
+	public WorkspaceManager getWorkspaceManager() {
+		return workspaceManager;
+	}
+
+	/**
+	 * Builds and registers a {@link ProjectContext} for a workspace folder added after
+	 * {@code initialize} (e.g. via {@code workspace/didChangeWorkspaceFolders}). No-op if
+	 * {@code projectPath} isn't an MI project.
+	 *
+	 * @param registryUri the folder URI to key this project by in {@link WorkspaceManager}
+	 * @param projectPath the absolute filesystem path of the project root
+	 */
+	public void addWorkspaceProjectContext(String registryUri, String projectPath) {
+		addProjectContext(registryUri, projectPath, synapseLanguageService.getMiServerPath());
+	}
+
+	/**
+	 * Removes the {@link ProjectContext} registered for a workspace folder removed via
+	 * {@code workspace/didChangeWorkspaceFolders}. No-op if none is registered for that URI.
+	 *
+	 * @param registryUri the folder URI the context was registered under
+	 */
+	public void removeWorkspaceProjectContext(String registryUri) {
+		workspaceManager.removeProject(registryUri);
 	}
 
 	/*
