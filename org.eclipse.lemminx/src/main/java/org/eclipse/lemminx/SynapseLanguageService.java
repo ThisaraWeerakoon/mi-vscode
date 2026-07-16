@@ -70,6 +70,7 @@ import org.eclipse.lemminx.customservice.synapse.inbound.conector.InboundEndpoin
 import org.eclipse.lemminx.customservice.synapse.inbound.conector.InboundInfoRequest;
 import org.eclipse.lemminx.customservice.synapse.dependency.tree.DependencyScanner;
 import org.eclipse.lemminx.customservice.synapse.dependency.tree.pojo.DependencyTree;
+import org.eclipse.lemminx.customservice.synapse.mediator.schema.generate.ServerLessTryoutHandler;
 import org.eclipse.lemminx.customservice.synapse.mediator.tryout.TryOutManager;
 import org.eclipse.lemminx.customservice.synapse.mediator.tryout.pojo.MediatorTryoutRequest;
 import org.eclipse.lemminx.customservice.synapse.mediatorService.AIConnectorHandler;
@@ -317,6 +318,55 @@ public class SynapseLanguageService implements ISynapseLanguageService {
 
     private ProjectContext resolve(DefinitionParams params) {
         return resolve(params != null ? params.getTextDocument() : null);
+    }
+
+    /**
+     * Resolves a {@link ProjectContext} from a plain filesystem path (e.g. {@link MediatorTryoutRequest#getFile()},
+     * which is a raw path rather than a {@code file://} URI) by converting it to a URI first.
+     */
+    private ProjectContext resolveByPath(String filePath) {
+        if (StringUtils.isBlank(filePath)) {
+            return defaultContext;
+        }
+        try {
+            return resolveByUri(Path.of(filePath).toUri().toString());
+        } catch (Exception e) {
+            return defaultContext;
+        }
+    }
+
+    /**
+     * Resolves the single, process-global {@link TryOutManager} for {@code ctx}, (re)binding it — and
+     * the shared DB-driver classloader — to {@code ctx}'s project when it currently points elsewhere.
+     *
+     * <p>The underlying MI server process is a single-port, single-instance resource (see the multi
+     * project execution plan's Phase 4), so a rebind is refused — returning {@code null} — while a
+     * try-out for a *different* project is actively running, rather than silently killing it.
+     *
+     * @return the {@link TryOutManager} bound to {@code ctx}'s project, or {@code null} if a different
+     *         project's try-out is currently active and the caller should surface a conflict message
+     */
+    private TryOutManager bindTryOutManager(ProjectContext ctx) {
+        if (ctx == null) {
+            return tryOutManager;
+        }
+        if (tryOutManager != null && ctx.getProjectUri().equals(tryOutManager.getProjectUri())) {
+            return tryOutManager;
+        }
+        if (tryOutManager != null && tryOutManager.isActive()) {
+            return null;
+        }
+        if (tryOutManager != null) {
+            tryOutManager.shutdown();
+        }
+        try {
+            DynamicClassLoader.updateClassLoader(Path.of(ctx.getProjectUri(), "deployment", "libs").toFile());
+        } catch (Exception e) {
+            log.log(Level.SEVERE, "Error while updating class loader for DB drivers.", e);
+        }
+        tryOutManager = new TryOutManager(ctx.getProjectUri(), miServerPath, ctx.getProjectServerVersion(),
+                ctx.getConnectorHolder(), languageClient);
+        return tryOutManager;
     }
 
     @Override
@@ -954,25 +1004,45 @@ public class SynapseLanguageService implements ISynapseLanguageService {
     @Override
     public CompletableFuture<MediatorTryoutInfo> tryOutMediator(MediatorTryoutRequest request) {
 
-        return CompletableFuture.supplyAsync(() -> tryOutManager.tryout(request));
+        ProjectContext ctx = resolveByPath(request.getFile());
+        return CompletableFuture.supplyAsync(() -> {
+            TryOutManager manager = bindTryOutManager(ctx);
+            if (manager == null) {
+                return new MediatorTryoutInfo(String.format(
+                        "A try-out for project '%s' is already active. Stop it before starting a try-out for a "
+                                + "different project.",
+                        tryOutManager.getProjectUri()));
+            }
+            return manager.tryout(request);
+        });
     }
 
     @Override
     public CompletableFuture<Boolean> shutDownTryoutServer() {
 
-        return CompletableFuture.supplyAsync(() -> Boolean.valueOf(tryOutManager.shutdown()));
+        return CompletableFuture.supplyAsync(() -> tryOutManager != null && tryOutManager.shutdown());
     }
 
     @Override
     public CompletableFuture<MediatorTryoutInfo> mediatorInputOutputSchema(MediatorTryoutRequest request) {
 
-        return CompletableFuture.supplyAsync(() -> tryOutManager.getInputOutputSchema(request));
+        // Schema generation here is a lightweight, stateless read (no shared MI server involved), so it
+        // is served directly from the resolved project rather than going through the single rebindable
+        // TryOutManager — it should never be blocked by another project's active try-out session.
+        ProjectContext ctx = resolveByPath(request.getFile());
+        return CompletableFuture.supplyAsync(() -> ctx != null
+                ? new ServerLessTryoutHandler(ctx.getProjectUri(), ctx.getConnectorHolder()).handle(request)
+                : new MediatorTryoutInfo("Project is not initialized"));
     }
 
     @Override
     public CompletableFuture<TestConnectionResponse> testConnectorConnection(TestConnectionRequest request) {
 
-        return CompletableFuture.supplyAsync(() -> tryOutManager.testConnectorConnection(request));
+        // TestConnectionRequest carries no document/project path, so this always targets whichever
+        // project the shared TryOutManager is currently bound to (see bindTryOutManager).
+        return CompletableFuture.supplyAsync(() -> tryOutManager != null
+                ? tryOutManager.testConnectorConnection(request)
+                : new TestConnectionResponse("Project is not initialized"));
     }
 
     @Override
