@@ -107,11 +107,11 @@ public class XMLWorkspaceService implements WorkspaceService, IXMLCommandService
 					java.nio.file.Path schemaDir = org.eclipse.lemminx.customservice.synapse.utils.Utils.copyXSDFiles(folder.getUri());
 					xmlLanguageServer.addWorkspaceSchema(folder.getUri(), schemaDir);
 					hasSchemaChanges = true;
+					String projectPath = org.eclipse.lemminx.customservice.synapse.utils.Utils.getAbsolutePath(folder.getUri());
+					xmlLanguageServer.addWorkspaceProjectContext(folder.getUri(), projectPath, schemaDir);
 				} catch (Exception e) {
 					log.log(Level.SEVERE, "Failed to copy XSD files for workspace folder: " + folder.getUri() + ". Error: " + e.getMessage());
 				}
-				String projectPath = org.eclipse.lemminx.customservice.synapse.utils.Utils.getAbsolutePath(folder.getUri());
-				xmlLanguageServer.addWorkspaceProjectContext(folder.getUri(), projectPath);
 			}
 		}
 		if (hasSchemaChanges) {

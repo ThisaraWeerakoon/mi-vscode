@@ -1607,10 +1607,15 @@ public class SynapseDiagnosticsParticipant implements IDiagnosticsParticipant {
             Map<String, ResourceResponse> allResources = resourceFinder.findAllResources(projectPath);
             collectResourceNames(allResources, artifactNames, templatePaths, nameToFiles);
 
-            // Dependent-project artifacts were loaded once by SynapseLanguageService at init;
-            // read through the published finder instead of re-loading on every cache miss.
-            collectResourceNames(SynapseLanguageService.getLoadedDependentResources(),
-                    artifactNames, templatePaths, nameToFiles);
+            // Dependent-project artifacts are loaded per-project into that document's ProjectContext;
+            // resolve it from the document's own URI instead of reading a single global default, so
+            // documents in different open projects see their own project's dependencies.
+            org.eclipse.lemminx.customservice.synapse.ProjectContext projectContext =
+                    SynapseLanguageService.resolveProjectContext(document.getDocumentURI());
+            Map<String, ResourceResponse> dependentResources = projectContext != null
+                    ? projectContext.getResourceFinder().getDependentResourcesMap()
+                    : SynapseLanguageService.getLoadedDependentResources();
+            collectResourceNames(dependentResources, artifactNames, templatePaths, nameToFiles);
         } catch (Exception e) {
             LOGGER.log(Level.WARNING, "Failed to build artifact name index for cross-reference validation", e);
             return null;
