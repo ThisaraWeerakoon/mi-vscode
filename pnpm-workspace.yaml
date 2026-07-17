@@ -5,3 +5,18 @@ packages:
   - 'submodules/vscode-extensions/workspaces/common-libs/service-designer'
   - 'submodules/vscode-extensions/workspaces/common-libs/playwright-vscode-tester'
   - 'submodules/vscode-extensions/workspaces/wso2-platform/wso2-platform-core'
+allowBuilds:
+  '@biomejs/biome': true
+  '@scarf/scarf': true
+  '@tree-sitter-grammars/tree-sitter-yaml': true
+  '@vscode/vsce-sign': true
+  canvas: true
+  core-js: true
+  core-js-pure: true
+  esbuild: true
+  keytar: true
+  protobufjs: true
+  tree-sitter: true
+  tree-sitter-json: true
+  ttf2woff2: true
+  unrs-resolver: true
