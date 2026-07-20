@@ -18,6 +18,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 import org.eclipse.lemminx.commons.WorkspaceFolders;
 import org.eclipse.lemminx.customservice.synapse.utils.Constant;
@@ -39,6 +41,8 @@ import org.eclipse.lsp4j.services.WorkspaceService;
  *
  */
 public class XMLWorkspaceService implements WorkspaceService, IXMLCommandService {
+
+	private static final Logger log = Logger.getLogger(XMLWorkspaceService.class.getName());
 
 	private final XMLLanguageServer xmlLanguageServer;
 	private final WorkspaceFolders workspaceFolders;
@@ -86,7 +90,33 @@ public class XMLWorkspaceService implements WorkspaceService, IXMLCommandService
 		xmlLanguageServer.getXMLLanguageService().getWorkspaceServiceParticipants()
 				.forEach(participant -> participant.didChangeWorkspaceFolders(params));
 
-//		workspaceFolders.didChangeWorkspaceFolders(params);
+		boolean hasSchemaChanges = false;
+		if (params.getEvent().getRemoved() != null) {
+			for (org.eclipse.lsp4j.WorkspaceFolder folder : params.getEvent().getRemoved()) {
+				if (log.isLoggable(Level.FINE)) {
+					log.fine("Removing workspace folder: " + folder.getUri());
+				}
+				xmlLanguageServer.removeWorkspaceSchema(folder.getUri());
+				xmlLanguageServer.removeWorkspaceProjectContext(folder.getUri());
+				hasSchemaChanges = true;
+			}
+		}
+		if (params.getEvent().getAdded() != null) {
+			for (org.eclipse.lsp4j.WorkspaceFolder folder : params.getEvent().getAdded()) {
+				try {
+					java.nio.file.Path schemaDir = org.eclipse.lemminx.customservice.synapse.utils.Utils.copyXSDFiles(folder.getUri());
+					xmlLanguageServer.addWorkspaceSchema(folder.getUri(), schemaDir);
+					hasSchemaChanges = true;
+					String projectPath = org.eclipse.lemminx.customservice.synapse.utils.Utils.getAbsolutePath(folder.getUri());
+					xmlLanguageServer.addWorkspaceProjectContext(folder.getUri(), projectPath, schemaDir);
+				} catch (Exception e) {
+					log.log(Level.SEVERE, "Failed to copy XSD files for workspace folder: " + folder.getUri() + ". Error: " + e.getMessage());
+				}
+			}
+		}
+		if (hasSchemaChanges) {
+			xmlLanguageServer.triggerSettingsRefresh();
+		}
 	}
 
 	@Override
@@ -97,9 +127,21 @@ public class XMLWorkspaceService implements WorkspaceService, IXMLCommandService
 		for (FileEvent change : changes) {
 			if ((change.getUri().contains(Constant.INBOUND_ENDPOINTS)
 					|| change.getUri().contains(Constant.INBOUND_CONNECTORS_DIR)) && change.getUri().contains(".zip")) {
-				((SynapseLanguageService) xmlLanguageServer.getSynapseLanguageService()).updateInboundConnectors();
+				org.eclipse.lemminx.customservice.synapse.ProjectContext context = xmlLanguageServer
+						.getWorkspaceManager().getProjectForDocument(change.getUri());
+				if (context != null) {
+					context.updateInboundConnectors();
+				} else {
+					((SynapseLanguageService) xmlLanguageServer.getSynapseLanguageService()).updateInboundConnectors();
+				}
 			} else if (change.getUri().contains(Constant.CONNECTORS) && change.getUri().contains(".zip")) {
-				((SynapseLanguageService) xmlLanguageServer.getSynapseLanguageService()).updateConnectors();
+				org.eclipse.lemminx.customservice.synapse.ProjectContext context = xmlLanguageServer
+						.getWorkspaceManager().getProjectForDocument(change.getUri());
+				if (context != null) {
+					context.updateConnectors();
+				} else {
+					((SynapseLanguageService) xmlLanguageServer.getSynapseLanguageService()).updateConnectors();
+				}
 			} else {
 				// LSP URIs use '/', but normalize defensively so a backslash path also matches on Windows.
 				if (change.getUri().replace('\\', '/').contains("src/main/wso2mi")) {

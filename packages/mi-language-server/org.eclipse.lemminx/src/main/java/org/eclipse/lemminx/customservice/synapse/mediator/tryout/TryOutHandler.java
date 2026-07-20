@@ -665,6 +665,16 @@ public class TryOutHandler {
         return Boolean.FALSE;
     }
 
+    /**
+     * Whether this handler's MI server process is currently running — the signal used to decide
+     * whether it's safe to tear this handler down and rebind the owning {@code TryOutManager} to a
+     * different project.
+     */
+    public boolean isActive() {
+
+        return server.isStarted();
+    }
+
     private void handleServerRestart(MediatorTryoutRequest request) {
 
         if (!(isNewTryOut(request) || isCompleteTryOut(request))) {
