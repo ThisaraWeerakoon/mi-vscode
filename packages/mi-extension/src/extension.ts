@@ -104,9 +104,9 @@ export async function activate(context: vscode.ExtensionContext) {
 	activateVisualizer(context, firstProject);
 	activateAiPanel(context);
 
-	workspace.workspaceFolders?.forEach(folder => {
-		context.subscriptions.push(...enableLS());
-	});
+	// enableLS() is workspace-wide (one shared language client), not per-folder,
+	// so it's registered once regardless of how many MI folders are open.
+	context.subscriptions.push(...enableLS());
 }
 
 export async function deactivate(): Promise<void> {
