@@ -138,12 +138,13 @@ export class MILanguageClient {
         // it for the rest. The shared server is only stopped on extension deactivate.
     }
 
-    public static async getAllInstances(): Promise<MILanguageClient[]> {
-        const instances: MILanguageClient[] = [];
-        for (const instance of this._instances.values()) {
-            instances.push(instance);
+    // Called only from extension deactivate() - stops the single shared server, if running.
+    public static async stopSharedInstance(): Promise<void> {
+        const instance = this._instances.get(this.SHARED_KEY);
+        if (instance) {
+            await instance.stop();
+            this._instances.delete(this.SHARED_KEY);
         }
-        return instances;
     }
 
     public static getOrCreateOutputChannel(): vscode.OutputChannel {

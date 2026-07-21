@@ -110,10 +110,7 @@ export async function activate(context: vscode.ExtensionContext) {
 }
 
 export async function deactivate(): Promise<void> {
-	const clients = await MILanguageClient.getAllInstances();
-	clients.forEach(async client => {
-		await client?.stop();
-	});
+	await MILanguageClient.stopSharedInstance();
 
 	// close all webviews
 	const allWebviews = Array.from(webviews.values());
