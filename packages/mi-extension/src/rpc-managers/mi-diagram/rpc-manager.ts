@@ -609,7 +609,7 @@ export class MiDiagramRpcManager implements MiDiagramAPI {
     async shutDownTryoutServer(): Promise<boolean> {
         return new Promise(async (resolve) => {
             const langClient = await MILanguageClient.getInstance(this.projectUri);
-            const res = await langClient.shutdownTryoutServer();
+            const res = await langClient.shutdownTryoutServer(this.projectUri);
             resolve(res);
         });
     }
@@ -765,7 +765,7 @@ export class MiDiagramRpcManager implements MiDiagramAPI {
             let response: GenerateAPIResponse = { apiXml: "", endpointXml: "" };
             if (!xmlData) {
                 const langClient = await MILanguageClient.getInstance(this.projectUri);
-                const projectDetailsRes = await langClient?.getProjectDetails();
+                const projectDetailsRes = await langClient?.getProjectDetails(this.projectUri);
                 const runtimeVersion = projectDetailsRes.primaryDetails.runtimeVersion.value;
                 const isRegistrySupported = compareVersions(runtimeVersion, RUNTIME_VERSION_440) < 0;
 
@@ -4147,7 +4147,7 @@ ${endpointAttributes}
                 try {
                     await fs.promises.copyFile(connectorPath, inboundDestinationPath);
 
-                    const updateResult = await langClient.updateInboundConnectors();
+                    const updateResult = await langClient.updateInboundConnectors(this.projectUri);
                     if (updateResult !== "success") {
                         deleteInboundZip();
                         return { success: false, error: updateResult || "Failed to import inbound endpoint." };
@@ -4838,7 +4838,8 @@ ${endpointAttributes}
             const langClient = await MILanguageClient.getInstance(this.projectUri);
             const res = await langClient.saveInboundEPUischema({
                 connectorName: params.connectorName,
-                uiSchema: params.uiSchema
+                uiSchema: params.uiSchema,
+                projectUri: this.projectUri
             });
 
             resolve(res);
@@ -5108,7 +5109,7 @@ ${keyValuesXML}`;
     async getAllResourcePaths(): Promise<GetAllResourcePathsResponse> {
         return new Promise(async (resolve) => {
             const langClient = await MILanguageClient.getInstance(this.projectUri);
-            const res = await langClient.getResourceFiles();
+            const res = await langClient.getResourceFiles(this.projectUri);
             resolve({ resourcePaths: res });
         });
     }
@@ -5116,7 +5117,7 @@ ${keyValuesXML}`;
     async getConfigurableEntries(): Promise<GetConfigurableEntriesResponse> {
         return new Promise(async (resolve) => {
             const langClient = await MILanguageClient.getInstance(this.projectUri);
-            const res = await langClient.getConfigurableEntries();
+            const res = await langClient.getConfigurableEntries(this.projectUri);
             resolve({ configurableEntries: res });
         });
     }
@@ -6093,7 +6094,7 @@ ${keyValuesXML}`;
     async checkDBDriver(className: string): Promise<CheckDBDriverResponse> {
         return new Promise(async (resolve) => {
             const langClient = await MILanguageClient.getInstance(this.projectUri);
-            const res = await langClient.checkDBDriver(className);
+            const res = await langClient.checkDBDriver(className, this.projectUri);
             resolve(res);
         });
     }
@@ -6210,7 +6211,7 @@ ${keyValuesXML}`;
     async getLocalInboundConnectors(): Promise<LocalInboundConnectorsResponse> {
         return new Promise(async (resolve) => {
             const langClient = await MILanguageClient.getInstance(this.projectUri);
-            let response = await langClient.getLocalInboundConnectors();
+            let response = await langClient.getLocalInboundConnectors(this.projectUri);
             resolve(response);
         });
     }
@@ -6218,7 +6219,7 @@ ${keyValuesXML}`;
     async getConnectionSchema(param: GetConnectionSchemaRequest): Promise<GetConnectionSchemaResponse> {
         return new Promise(async (resolve) => {
             const langClient = await MILanguageClient.getInstance(this.projectUri);
-            let response = await langClient.getConnectionSchema(param);
+            let response = await langClient.getConnectionSchema({ ...param, projectUri: this.projectUri });
             resolve(response);
         });
     }
@@ -6380,7 +6381,7 @@ ${keyValuesXML}`;
     async getValueOfEnvVariable(variableName: string): Promise<string> {
         return new Promise(async (resolve) => {
             const langClient = await MILanguageClient.getInstance(this.projectUri);
-            const response = await langClient.getConfigurableList();
+            const response = await langClient.getConfigurableList(this.projectUri);
             const envVariable = response.find(variable => variable.key === variableName);
             if (envVariable && envVariable.value != null && envVariable.value !== "") {
                 resolve(envVariable.value);
@@ -6712,7 +6713,7 @@ ${keyValuesXML}`;
     async getConnectorDependencies(params: GetConnectorDependenciesRequest): Promise<GetConnectorDependenciesResponse> {
         return new Promise(async (resolve) => {
             const langClient = await MILanguageClient.getInstance(this.projectUri);
-            const res = await langClient.getConnectorDependencies(params);
+            const res = await langClient.getConnectorDependencies({ ...params, projectUri: this.projectUri });
             resolve(res);
         });
     }
@@ -6720,7 +6721,7 @@ ${keyValuesXML}`;
     async updateConnectorDependencyOverride(params: UpdateConnectorDependencyOverrideRequest): Promise<boolean> {
         return new Promise(async (resolve) => {
             const langClient = await MILanguageClient.getInstance(this.projectUri);
-            const res = await langClient.updateConnectorDependencyOverride(params);
+            const res = await langClient.updateConnectorDependencyOverride({ ...params, projectUri: this.projectUri });
             resolve(res);
         });
     }
@@ -6728,7 +6729,7 @@ ${keyValuesXML}`;
     async resetConnectorDependencyOverrides(params: ResetConnectorDependencyOverridesRequest): Promise<boolean> {
         return new Promise(async (resolve) => {
             const langClient = await MILanguageClient.getInstance(this.projectUri);
-            const res = await langClient.resetConnectorDependencyOverrides(params);
+            const res = await langClient.resetConnectorDependencyOverrides({ ...params, projectUri: this.projectUri });
             resolve(res);
         });
     }
@@ -6736,7 +6737,7 @@ ${keyValuesXML}`;
     async updateConnectorFlags(params: UpdateConnectorFlagsRequest): Promise<boolean> {
         return new Promise(async (resolve) => {
             const langClient = await MILanguageClient.getInstance(this.projectUri);
-            const res = await langClient.updateConnectorFlags(params);
+            const res = await langClient.updateConnectorFlags({ ...params, projectUri: this.projectUri });
             resolve(res);
         });
     }
@@ -6744,7 +6745,7 @@ ${keyValuesXML}`;
     async updateGlobalConnectorFlags(params: UpdateGlobalConnectorFlagsRequest): Promise<boolean> {
         return new Promise(async (resolve) => {
             const langClient = await MILanguageClient.getInstance(this.projectUri);
-            const res = await langClient.updateGlobalConnectorFlags(params);
+            const res = await langClient.updateGlobalConnectorFlags({ ...params, projectUri: this.projectUri });
             resolve(res);
         });
     }
@@ -6919,7 +6920,7 @@ ${keyValuesXML}`;
 
 async function exposeVersionedServices(projectUri: string): Promise<boolean> {
     const langClient = await MILanguageClient.getInstance(projectUri);
-    const projectDetailsRes = await langClient?.getProjectDetails();
+    const projectDetailsRes = await langClient?.getProjectDetails(projectUri);
     const isVersionedDeploymentEnabled = projectDetailsRes?.buildDetails?.versionedDeployment?.value;
     if (!isVersionedDeploymentEnabled) {
         return false;

@@ -465,6 +465,7 @@ export interface DownloadMIRequest {
 export interface UpdateAiDependenciesRequest {
     dependencies: DependencyDetails[];
     operation: "add" | "remove";
+    projectUri?: string;
 }
 
 export interface UpdateAiDependenciesResponse {

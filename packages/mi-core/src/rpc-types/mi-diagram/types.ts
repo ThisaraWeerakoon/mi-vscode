@@ -1567,6 +1567,7 @@ export interface GetConnectorInfoRequest {
     groupId: string;
     artifactId: string;
     version: string;
+    projectUri?: string;
 }
 
 export interface ConnectorActionParameter {
@@ -1611,8 +1612,8 @@ export type GetConnectorInfoResponse = ConnectorInfo | string;
 // Accepts either a bundled id OR full Maven coordinates (never a partial mix).
 // Returns an InboundEndpointInfo or a plain string error.
 export type GetInboundInfoRequest =
-    | { id: string; groupId?: never; artifactId?: never; version?: never }
-    | { id?: never; groupId: string; artifactId: string; version: string };
+    | { id: string; groupId?: never; artifactId?: never; version?: never; projectUri?: string }
+    | { id?: never; groupId: string; artifactId: string; version: string; projectUri?: string };
 
 export interface InboundEndpointParameter {
     name: string;
@@ -1763,6 +1764,7 @@ export interface GetConnectorConnectionsResponse {
 export interface SaveInboundEPUischemaRequest {
     connectorName: string;
     uiSchema: string;
+    projectUri?: string;
 }
 
 export interface GetInboundEPUischemaRequest {
@@ -2223,6 +2225,7 @@ export interface GetConnectionSchemaRequest {
     connectorName?: string;
     connectionType?: string;
     documentUri?: string;
+    projectUri?: string;
 }
 
 export interface GetConnectionSchemaResponse {
@@ -2464,6 +2467,7 @@ export interface ConnectorEffectiveData {
 
 export interface GetConnectorDependenciesRequest {
     connectorArtifactId?: string;
+    projectUri?: string;
 }
 
 export interface GetConnectorDependenciesResponse {
@@ -2481,6 +2485,7 @@ export interface UpdateConnectorDependencyOverrideRequest {
     version?: string;
     omit?: boolean;
     localPath?: string;
+    projectUri?: string;
 }
 
 export interface ResetConnectorDependencyOverridesRequest {
@@ -2488,17 +2493,20 @@ export interface ResetConnectorDependencyOverridesRequest {
     connectionType?: string;
     groupId?: string;
     artifactId?: string;
+    projectUri?: string;
 }
 
 export interface UpdateConnectorFlagsRequest {
     connectorArtifactId: string;
     omit?: boolean;
     omitAllDrivers?: boolean;
+    projectUri?: string;
 }
 
 export interface UpdateGlobalConnectorFlagsRequest {
     omitAllDrivers?: boolean;
     omitAllConnectors?: boolean;
+    projectUri?: string;
 }
 
 //  MCP Server Form helpers 

@@ -322,7 +322,7 @@ export class MILanguageClient {
                 this.languageClient = new ExtendedLanguageClient('synapseXML', 'Synapse Language Server', this.projectUri,
                     serverOptions, clientOptions);
                 await this.languageClient.start();
-                await this.languageClient?.updateConnectorDependencies();
+                await this.languageClient?.updateConnectorDependencies(this.projectUri);
                 await loadCAppResources(this.projectUri, this.languageClient!);
 
                 //Setup autoCloseTags
