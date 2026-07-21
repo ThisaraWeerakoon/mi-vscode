@@ -73,6 +73,7 @@ import org.eclipse.lemminx.customservice.synapse.dependency.tree.pojo.Dependency
 import org.eclipse.lemminx.customservice.synapse.mediator.schema.generate.ServerLessTryoutHandler;
 import org.eclipse.lemminx.customservice.synapse.mediator.tryout.TryOutManager;
 import org.eclipse.lemminx.customservice.synapse.mediator.tryout.pojo.MediatorTryoutRequest;
+import org.eclipse.lemminx.customservice.synapse.mediator.tryout.pojo.ShutdownTryoutRequest;
 import org.eclipse.lemminx.customservice.synapse.mediatorService.AIConnectorHandler;
 import org.eclipse.lemminx.customservice.synapse.mediatorService.pojo.MediatorRequest;
 import org.eclipse.lemminx.customservice.synapse.mediatorService.pojo.SynapseConfigRequest;
@@ -343,10 +344,14 @@ public class SynapseLanguageService implements ISynapseLanguageService {
      * project execution plan's Phase 4), so a rebind is refused — returning {@code null} — while a
      * try-out for a *different* project is actively running, rather than silently killing it.
      *
+     * @param requestServerPath the initiating project's configured MI server path (may be blank/null);
+     *                           used instead of the process-global {@link #miServerPath} when this call
+     *                           is what creates a new {@link TryOutManager}, so the single shared server
+     *                           launches the runtime the *initiating* project expects
      * @return the {@link TryOutManager} bound to {@code ctx}'s project, or {@code null} if a different
      *         project's try-out is currently active and the caller should surface a conflict message
      */
-    private TryOutManager bindTryOutManager(ProjectContext ctx) {
+    private TryOutManager bindTryOutManager(ProjectContext ctx, String requestServerPath) {
         if (ctx == null) {
             return tryOutManager;
         }
@@ -364,7 +369,8 @@ public class SynapseLanguageService implements ISynapseLanguageService {
         } catch (Exception e) {
             log.log(Level.SEVERE, "Error while updating class loader for DB drivers.", e);
         }
-        tryOutManager = new TryOutManager(ctx.getProjectUri(), miServerPath, ctx.getProjectServerVersion(),
+        String effectiveServerPath = StringUtils.isNotBlank(requestServerPath) ? requestServerPath : miServerPath;
+        tryOutManager = new TryOutManager(ctx.getProjectUri(), effectiveServerPath, ctx.getProjectServerVersion(),
                 ctx.getConnectorHolder(), languageClient);
         return tryOutManager;
     }
@@ -1006,7 +1012,7 @@ public class SynapseLanguageService implements ISynapseLanguageService {
 
         ProjectContext ctx = resolveByPath(request.getFile());
         return CompletableFuture.supplyAsync(() -> {
-            TryOutManager manager = bindTryOutManager(ctx);
+            TryOutManager manager = bindTryOutManager(ctx, request.getServerPath());
             if (manager == null) {
                 return new MediatorTryoutInfo(String.format(
                         "A try-out for project '%s' is already active. Stop it before starting a try-out for a "
@@ -1018,9 +1024,21 @@ public class SynapseLanguageService implements ISynapseLanguageService {
     }
 
     @Override
-    public CompletableFuture<Boolean> shutDownTryoutServer() {
+    public CompletableFuture<Boolean> shutDownTryoutServer(ShutdownTryoutRequest request) {
 
-        return CompletableFuture.supplyAsync(() -> tryOutManager != null && tryOutManager.shutdown());
+        // Only tear down the shared TryOutManager if it's still bound to the requesting project (or the
+        // request carries no project, for older clients) - otherwise an unrelated project's shutdown call
+        // (e.g. before its own build/run) would kill another project's active try-out session.
+        return CompletableFuture.supplyAsync(() -> {
+            if (tryOutManager == null) {
+                return false;
+            }
+            String requestProjectUri = request != null ? request.getProjectUri() : null;
+            if (StringUtils.isNotBlank(requestProjectUri) && !requestProjectUri.equals(tryOutManager.getProjectUri())) {
+                return false;
+            }
+            return tryOutManager.shutdown();
+        });
     }
 
     @Override
