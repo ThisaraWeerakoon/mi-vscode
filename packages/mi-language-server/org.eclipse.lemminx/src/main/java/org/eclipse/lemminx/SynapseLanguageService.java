@@ -291,7 +291,7 @@ public class SynapseLanguageService implements ISynapseLanguageService {
         }
         this.defaultContext = context;
         try {
-            DynamicClassLoader.updateClassLoader(Path.of(projectUri, "deployment", "libs").toFile());
+            DynamicClassLoader.updateClassLoader(projectUri, Path.of(projectUri, "deployment", "libs").toFile());
             this.tryOutManager = new TryOutManager(projectUri, miServerPath, context.getProjectServerVersion(),
                     context.getConnectorHolder(), languageClient);
         } catch (Exception e) {
@@ -393,7 +393,8 @@ public class SynapseLanguageService implements ISynapseLanguageService {
             tryOutManager.shutdown();
         }
         try {
-            DynamicClassLoader.updateClassLoader(Path.of(ctx.getProjectUri(), "deployment", "libs").toFile());
+            DynamicClassLoader.updateClassLoader(ctx.getProjectUri(),
+                    Path.of(ctx.getProjectUri(), "deployment", "libs").toFile());
         } catch (Exception e) {
             log.log(Level.SEVERE, "Error while updating class loader for DB drivers.", e);
         }
@@ -421,7 +422,8 @@ public class SynapseLanguageService implements ISynapseLanguageService {
         boolean connectionStatus = dbConnectionTester.testDBConnection(dbConnectionTestParams.dbType,
                     dbConnectionTestParams.username, dbConnectionTestParams.password,
                     dbConnectionTestParams.host, dbConnectionTestParams.port, dbConnectionTestParams.dbName,
-                    dbConnectionTestParams.url, dbConnectionTestParams.className);
+                    dbConnectionTestParams.url, dbConnectionTestParams.className,
+                    dbConnectionTestParams.projectUri);
         DBConnectionTestResponse response = new DBConnectionTestResponse(connectionStatus);
         return CompletableFuture.supplyAsync(() -> response);
     }
@@ -432,7 +434,7 @@ public class SynapseLanguageService implements ISynapseLanguageService {
         boolean connectionStatus = dbConnectionTester.testDBConnection(request.dbType,
                 request.username, request.password,
                 request.host, request.port, request.dbName,
-                request.url, request.className, request.driverPath);
+                request.url, request.className, request.driverPath, request.projectUri);
         DBConnectionTestResponse response = new DBConnectionTestResponse(connectionStatus);
         return CompletableFuture.supplyAsync(() -> response);
     }
@@ -519,7 +521,8 @@ public class SynapseLanguageService implements ISynapseLanguageService {
     public CompletableFuture<ResourceResponse> availableResources(ResourceParam param) {
 
         ProjectContext ctx = StringUtils.isNotBlank(param.customProjectUri)
-                ? resolveByUri(param.customProjectUri) : defaultContext;
+                ? resolveByUri(param.customProjectUri)
+                : resolveByProjectUri(param.projectUri);
         String effectivePath = StringUtils.isNotBlank(param.projectPath) ? param.projectPath
                 : StringUtils.isNotBlank(param.customProjectUri) ? param.customProjectUri
                 : ctx != null ? ctx.getProjectUri() : null;
@@ -959,20 +962,22 @@ public class SynapseLanguageService implements ISynapseLanguageService {
 
     @Override
     public CompletableFuture<Boolean> addDBDriver(ModifyDriverRequestParams requestParams) {
-        boolean isSuccess = QueryGenerator.addDriverToClassPath(requestParams.addDriverPath, requestParams.className);
+        boolean isSuccess = QueryGenerator.addDriverToClassPath(requestParams.addDriverPath, requestParams.className,
+                requestParams.projectUri);
         return CompletableFuture.supplyAsync(() -> isSuccess);
     }
 
     @Override
     public CompletableFuture<Boolean> removeDBDriver(ModifyDriverRequestParams requestParams) {
-        boolean response = QueryGenerator.removeDriverFromClassPath(requestParams.removeDriverPath);
+        boolean response = QueryGenerator.removeDriverFromClassPath(requestParams.removeDriverPath,
+                requestParams.projectUri);
         return CompletableFuture.supplyAsync(() -> response);
     }
 
     @Override
     public CompletableFuture<Boolean> modifyDBDriver(ModifyDriverRequestParams requestParams) {
         boolean response = QueryGenerator.modifyDriverInClassPath(requestParams.addDriverPath,
-                requestParams.removeDriverPath, requestParams.className);
+                requestParams.removeDriverPath, requestParams.className, requestParams.projectUri);
         return CompletableFuture.supplyAsync(() -> response);
     }
 
@@ -1089,11 +1094,17 @@ public class SynapseLanguageService implements ISynapseLanguageService {
     @Override
     public CompletableFuture<TestConnectionResponse> testConnectorConnection(TestConnectionRequest request) {
 
-        // TestConnectionRequest carries no document/project path, so this always targets whichever
-        // project the shared TryOutManager is currently bound to (see bindTryOutManager).
-        return CompletableFuture.supplyAsync(() -> tryOutManager != null
-                ? tryOutManager.testConnectorConnection(request)
-                : new TestConnectionResponse("Project is not initialized"));
+        ProjectContext ctx = resolveByProjectUri(request.getProjectUri());
+        return CompletableFuture.supplyAsync(() -> {
+            TryOutManager manager = bindTryOutManager(ctx, null);
+            if (manager == null) {
+                return new TestConnectionResponse(String.format(
+                        "A try-out for project '%s' is already active. Stop it before testing a connector "
+                                + "connection for a different project.",
+                        tryOutManager.getProjectUri()));
+            }
+            return manager.testConnectorConnection(request);
+        });
     }
 
     @Override
@@ -1511,15 +1522,6 @@ public class SynapseLanguageService implements ISynapseLanguageService {
         ProjectContext ctx = resolveByProjectUri(request != null ? request.projectUri : null);
         return CompletableFuture.supplyAsync(() -> ctx != null
                 ? ctx.getInboundConnectorHolder().getCustomInboundConnectors() : null);
-    }
-
-    public String getProjectUri() {
-        return defaultContext != null ? defaultContext.getProjectUri() : null;
-    }
-
-    public ConnectorHolder getConnectorHolder() {
-
-        return defaultContext != null ? defaultContext.getConnectorHolder() : null;
     }
 
     public String getExtensionPath() {
