@@ -22,6 +22,7 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import org.eclipse.lemminx.commons.WorkspaceFolders;
+import org.eclipse.lemminx.customservice.synapse.dataService.DynamicClassLoader;
 import org.eclipse.lemminx.customservice.synapse.utils.Constant;
 import org.eclipse.lemminx.extensions.synapse.SynapseDiagnosticsParticipant;
 import org.eclipse.lemminx.services.extensions.commands.IXMLCommandService;
@@ -98,6 +99,7 @@ public class XMLWorkspaceService implements WorkspaceService, IXMLCommandService
 				}
 				xmlLanguageServer.removeWorkspaceSchema(folder.getUri());
 				xmlLanguageServer.removeWorkspaceProjectContext(folder.getUri());
+				DynamicClassLoader.removeProject(folder.getUri());
 				hasSchemaChanges = true;
 			}
 		}
