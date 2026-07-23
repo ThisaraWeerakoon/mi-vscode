@@ -53,39 +53,41 @@ public class DBConnectionTester {
      * @return True if the connection is successful, false otherwise
      */
     public boolean testDBConnection(String dbType, String username, String password, String host, String port,
-                                    String dbName, String url, String className) {
+                                    String dbName, String url, String className, String projectUri) {
 
         Connection connection;
         if (StringUtils.isBlank(url)) {
             String connUriStr = generateConnectionUrl(dbType, host, port, dbName);
-            connection = getConnection(connUriStr, username, password, className);
+            connection = getConnection(connUriStr, username, password, className, projectUri);
         } else {
-            connection = getConnection(url, username, password, className);
+            connection = getConnection(url, username, password, className, projectUri);
         }
 
         return connection != null;
     }
 
     public boolean testDBConnection(String dbType, String username, String password, String host, String port,
-                                    String dbName, String url, String className, String driverPath) {
+                                    String dbName, String url, String className, String driverPath,
+                                    String projectUri) {
 
         Connection connection;
         if (StringUtils.isBlank(url)) {
             String connUriStr = generateConnectionUrl(dbType, host, port, dbName);
-            connection = getConnection(connUriStr, username, password, className, driverPath);
+            connection = getConnection(connUriStr, username, password, className, driverPath, projectUri);
         } else {
-            connection = getConnection(url, username, password, className, driverPath);
+            connection = getConnection(url, username, password, className, driverPath, projectUri);
         }
 
         return connection != null;
     }
 
-    public static Connection getConnection(String connectionUrl, String username, String password, String className) {
+    public static Connection getConnection(String connectionUrl, String username, String password, String className,
+                                           String projectUri) {
 
         Connection connection = null;
 
         try {
-            URLClassLoader urlClassLoader = DynamicClassLoader.getClassLoader();
+            URLClassLoader urlClassLoader = DynamicClassLoader.getClassLoader(projectUri);
 
             Driver driver = (Driver) Class.forName(className, true, urlClassLoader).newInstance();
             DriverManager.registerDriver(new DriverShim(driver));
@@ -109,7 +111,7 @@ public class DBConnectionTester {
     }
 
     public static Connection getConnection(String connectionUrl, String username, String password, String className,
-                                           String driverPath) {
+                                           String driverPath, String projectUri) {
 
         Connection connection = null;
         try {
@@ -117,7 +119,7 @@ public class DBConnectionTester {
                     "Get connection with Class name: " + className + "  and Driver path : " + driverPath);
 
             Path jarPath = Paths.get(driverPath);
-            DynamicClassLoader.updateJarInClassLoader(new File(driverPath), true);
+            DynamicClassLoader.updateJarInClassLoader(projectUri, new File(driverPath), true);
             URLClassLoader urlClassLoader = new URLClassLoader(new URL[]{jarPath.toUri().toURL()});
             Driver driver = (Driver) Class.forName(className, true, urlClassLoader).getDeclaredConstructor()
                     .newInstance();
