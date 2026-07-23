@@ -2260,6 +2260,7 @@ export type ExpressionCompletionsResponse = {
 export interface GenerateConnectorRequest {
     openAPIPath: string;
     connectorProjectPath: string;
+    projectUri?: string;
 }
 export interface GenerateConnectorResponse {
     buildStatus: boolean;
@@ -2416,6 +2417,7 @@ export interface GetStoredProceduresResponse {
 export interface DriverDownloadRequest {
     connectorName: string;
     connectionType: string;
+    projectUri?: string;
 }
 
 export interface DriverDownloadResponse {

@@ -318,7 +318,7 @@ public interface ISynapseLanguageService {
     CompletableFuture<List<ConfigDetails>> getConfigurableList(ProjectUriRequest request);
 
     @JsonRequest
-    CompletableFuture<String> getLocalInboundEndpointsListForCopilot();
+    CompletableFuture<String> getLocalInboundEndpointsListForCopilot(ProjectUriRequest request);
 
     @JsonRequest
     CompletableFuture<List<String>> pdfToImagesBase64(PdfToImagesRequest request);

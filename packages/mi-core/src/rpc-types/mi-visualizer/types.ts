@@ -194,9 +194,11 @@ export interface UpdateConfigValuesRequest {
 
 export interface UpdatePropertiesRequest {
     properties: PropertyDetails[];
+    projectUri?: string;
 }
 export interface UpdateDependenciesRequest {
     dependencies: DependencyDetails[];
+    projectUri?: string;
 }
 
 export interface UpdateConfigValuesResponse {
@@ -482,6 +484,7 @@ export interface MavenDeployPluginDetails {
     serverType?: string;
     content?: string;
     range?: Range;
+    projectUri?: string;
 }
 
 export interface ProjectConfig {

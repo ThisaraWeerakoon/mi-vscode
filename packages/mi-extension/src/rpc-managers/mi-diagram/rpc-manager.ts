@@ -6621,7 +6621,7 @@ ${keyValuesXML}`;
     async downloadDriverForConnector(params: DriverDownloadRequest): Promise<DriverDownloadResponse> {
         return new Promise(async (resolve) => {
             const langClient = await MILanguageClient.getInstance(this.projectUri);
-            const res = await langClient.downloadDriverForConnector(params);
+            const res = await langClient.downloadDriverForConnector({ ...params, projectUri: this.projectUri });
             resolve(res);
         });
     }

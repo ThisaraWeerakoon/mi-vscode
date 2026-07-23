@@ -596,7 +596,7 @@ export class ExtendedLanguageClient extends LanguageClient {
         return this.sendRequest("synapse/updateGlobalConnectorFlags", params);
     }
 
-    async initConnectorConfig(projectPath: string): Promise<void> {
-        return this.sendNotification("synapse/initConnectorConfig", { projectPath });
+    async initConnectorConfig(projectUri: string): Promise<void> {
+        return this.sendNotification("synapse/initConnectorConfig", { projectUri });
     }
 }

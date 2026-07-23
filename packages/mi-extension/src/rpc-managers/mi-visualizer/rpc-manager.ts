@@ -172,7 +172,7 @@ export class MiVisualizerRpcManager implements MIVisualizerAPI {
     async setDeployPlugin(params: MavenDeployPluginDetails): Promise<MavenDeployPluginDetails> {
         return new Promise(async (resolve) => {
             const langClient = await MILanguageClient.getInstance(this.projectUri);
-            const res = await langClient.setDeployPlugin(params);
+            const res = await langClient.setDeployPlugin({ ...params, projectUri: this.projectUri });
             await this.updatePom([res.textEdit]);
             resolve(res);
         });
@@ -250,7 +250,7 @@ export class MiVisualizerRpcManager implements MIVisualizerAPI {
     async updateProperties(params: UpdatePropertiesRequest): Promise<boolean> {
         return new Promise(async (resolve) => {
             const langClient = await MILanguageClient.getInstance(this.projectUri);
-            const res = await langClient.updateProperties(params);
+            const res = await langClient.updateProperties({ ...params, projectUri: this.projectUri });
             await this.updatePom(res.textEdits);
             resolve(true);
         })
@@ -407,7 +407,7 @@ export class MiVisualizerRpcManager implements MIVisualizerAPI {
             });
 
             if (updatedDependencies.length > 0) {
-                const res = await langClient.updateDependencies({ dependencies: updatedDependencies });
+                const res = await langClient.updateDependencies({ dependencies: updatedDependencies, projectUri: this.projectUri });
                 await this.updatePom(res.textEdits);
             }
 
@@ -496,7 +496,7 @@ export class MiVisualizerRpcManager implements MIVisualizerAPI {
     async updateDependenciesFromOverview(params: UpdateDependenciesRequest): Promise<boolean> {
         return new Promise(async (resolve) => {
             const langClient = await MILanguageClient.getInstance(this.projectUri);
-            const res = await langClient.updateDependencies({ dependencies: params.dependencies });
+            const res = await langClient.updateDependencies({ dependencies: params.dependencies, projectUri: this.projectUri });
             await this.updatePom(res.textEdits);
             resolve(true);
         });
@@ -926,7 +926,8 @@ export class MiVisualizerRpcManager implements MIVisualizerAPI {
         if (filePath && filePath.length > 0) {
             const connectorGenRequest = {
                 openAPIPath: filePath,
-                connectorProjectPath: path.join(this.projectUri, 'target')
+                connectorProjectPath: path.join(this.projectUri, 'target'),
+                projectUri: this.projectUri
             };
             const { buildStatus, connectorPath, errorMessage } = await langClient.generateConnector(connectorGenRequest);
             if (buildStatus) {
@@ -999,7 +1000,7 @@ export class MiVisualizerRpcManager implements MIVisualizerAPI {
             });
             
             if (updatedDependencies.length > 0) {
-                const res = await langClient.updateDependencies({ dependencies: updatedDependencies });
+                const res = await langClient.updateDependencies({ dependencies: updatedDependencies, projectUri: this.projectUri });
                 await this.updatePom(res.textEdits);
                 resolve(true);
             }
