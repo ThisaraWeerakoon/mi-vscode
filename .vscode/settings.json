@@ -8,4 +8,7 @@
     "rush.json": "jsonc",
     "rush.bi.json": "jsonc"
   },
+  "java.import.exclusions": [
+    "**/packages/mi-language-server/**"
+  ]
 }

@@ -244,11 +244,13 @@
             "request": "launch",
             "env": {
                 "WEB_VIEW_WATCH_MODE": "true",
-                "WEB_VIEW_DEV_HOST": "http://localhost:9000"
+                "WEB_VIEW_DEV_HOST": "http://localhost:9000",
+                "LSDEBUG": "true"
             },
             "debugWebviews": true,
             "args": [
-                "--extensionDevelopmentPath=${workspaceFolder}/packages/mi-extension"
+                "--extensionDevelopmentPath=${workspaceFolder}/packages/mi-extension",
+                "--user-data-dir=${workspaceFolder}/.vscode-dev-profile"
             ],
             "outFiles": [
                 "${workspaceFolder}/packages/mi-extension/dist/**/*.js",

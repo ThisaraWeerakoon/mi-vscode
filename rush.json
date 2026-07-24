@@ -10,7 +10,7 @@
       "npm run init-submodules"
     ],
     "postRushBuild": [
-      "cd packages/mi-extension && pnpm run copyVSIXToRoot"
+      "pnpm --dir packages/mi-extension run copyVSIXToRoot"
     ]
   },
   "projects": [
