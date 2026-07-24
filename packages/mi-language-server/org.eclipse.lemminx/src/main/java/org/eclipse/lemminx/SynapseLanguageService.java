@@ -339,13 +339,16 @@ public class SynapseLanguageService implements ISynapseLanguageService {
     }
 
     /**
-     * Resolves a {@link ProjectContext} from an explicit project root URI (e.g. the {@code projectUri}
-     * field on RPCs that carry no document to resolve a project from), via an exact match against
-     * {@link WorkspaceManager#getProject(String)} rather than the prefix match {@link #resolveByUri} uses.
+     * Resolves a {@link ProjectContext} from an explicit project root (e.g. the {@code projectUri}
+     * field on RPCs that carry no document to resolve a project from). The VS Code extension sends
+     * this field as {@code WorkspaceFolder.uri.fsPath} — an absolute filesystem path, not the
+     * {@code file://} URI {@link WorkspaceManager} registers projects under — so this resolves via
+     * {@link WorkspaceManager#getProjectByPath(String)}, which matches on each context's own
+     * {@link ProjectContext#getProjectUri()} instead of the registry key.
      */
     private ProjectContext resolveByProjectUri(String projectUri) {
         if (StringUtils.isNotBlank(projectUri) && xmlLanguageServer != null) {
-            ProjectContext context = xmlLanguageServer.getWorkspaceManager().getProject(projectUri);
+            ProjectContext context = xmlLanguageServer.getWorkspaceManager().getProjectByPath(projectUri);
             if (context != null) {
                 return context;
             }
