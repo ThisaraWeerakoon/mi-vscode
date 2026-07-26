@@ -72,7 +72,11 @@ export async function activate(context: vscode.ExtensionContext) {
 						 oldProjects?.[0]?.uri?.fsPath || 
 						 path.join(os.tmpdir(), uuidv4());
 	
-	if (!oldProjects.length) {
+	if (newProjects.length) {
+		for (const project of newProjects) {
+			getStateMachine(project.uri.fsPath);
+		}
+	} else if (!oldProjects.length) {
 		getStateMachine(firstProject);
 	}
 	workspace.onDidChangeWorkspaceFolders(async (event) => {
