@@ -103,6 +103,10 @@ export class MILanguageClient {
     // Single well-known key: one shared LS process serves every MI workspace folder.
     private static readonly SHARED_KEY = '__shared__';
     private static _instances: Map<string, MILanguageClient> = new Map();
+    // In-flight launch promise, used as a lock so concurrent getInstance() calls
+    // (e.g. multiple workspace folders activating at once) await the same JVM
+    // spawn instead of each seeing an empty _instances map and launching their own.
+    private static _launchPromise: Promise<MILanguageClient> | undefined;
     private static lsChannel: vscode.OutputChannel | undefined;
     private languageClient: ExtendedLanguageClient | undefined;
 
@@ -114,10 +118,19 @@ export class MILanguageClient {
 
     public static async getInstance(projectUri: string): Promise<ExtendedLanguageClient> {
         if (!this._instances.has(this.SHARED_KEY)) {
-            // First caller seeds JDK/version resolution and spawns the single JVM.
-            const instance = new MILanguageClient(projectUri);
-            await instance.launch(projectUri);
-            this._instances.set(this.SHARED_KEY, instance);
+            if (!this._launchPromise) {
+                // First caller seeds JDK/version resolution and spawns the single JVM.
+                // The promise itself is the lock: concurrent callers (e.g. several
+                // workspace folders activating at once) await it below instead of
+                // each finding an empty map and launching their own JVM.
+                this._launchPromise = (async () => {
+                    const instance = new MILanguageClient(projectUri);
+                    await instance.launch(projectUri);
+                    this._instances.set(this.SHARED_KEY, instance);
+                    return instance;
+                })();
+            }
+            await this._launchPromise;
         } else {
             // Shared server already running: still run this project's own runtime
             // setup (JDK/MI download, LEGACY_EXPRESSION_ENABLED) without relaunching.
@@ -144,6 +157,7 @@ export class MILanguageClient {
         if (instance) {
             await instance.stop();
             this._instances.delete(this.SHARED_KEY);
+            this._launchPromise = undefined;
         }
     }
 
