@@ -4390,7 +4390,14 @@ ${endpointAttributes}
                 registryResources: responses.flatMap(r => r?.registryResources ?? [])
             };
         } else {
-            return (await MILanguageClient.getInstance(this.projectUri)).getAvailableResources(params);
+            // Webview callers (e.g. the Keylookup dropdowns) don't know their project, so stamp this
+            // manager's project on the request. Without it the language server has no project to route
+            // to and answers from the default (first) workspace folder, which in a multi-root
+            // workspace omits this project's .car dependency artifacts.
+            return (await MILanguageClient.getInstance(this.projectUri)).getAvailableResources({
+                ...params,
+                projectUri: params.projectUri ?? this.projectUri
+            });
         }
     }
 

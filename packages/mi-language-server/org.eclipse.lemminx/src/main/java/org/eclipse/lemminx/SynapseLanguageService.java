@@ -520,12 +520,29 @@ public class SynapseLanguageService implements ISynapseLanguageService {
         });
     }
 
+    /**
+     * Lists the artifacts of one project — its own plus those its {@code .car} dependencies
+     * contribute — for the key dropdowns in the property panels.
+     *
+     * <p>Routing must land on the requesting project's {@link ProjectContext}, because the dependent
+     * artifacts live in that context's {@code ResourceFinder} and nowhere else. Both the explicit
+     * {@code projectUri} and the originating document are honoured so a client that supplies either
+     * one is routed correctly; only a request carrying neither falls back to {@link #defaultContext}.
+     *
+     * <p>{@code customProjectUri} is the debug-flow override: the debugger asks for a project that
+     * may not be open in the workspace at all, so it names the directory to scan directly. It is a
+     * project root path, hence {@link #resolveByProjectUri} rather than {@link #resolveByUri}.
+     *
+     * <p>Except for that override and the legacy {@code projectPath} field, the scanned directory is
+     * taken from the resolved context, so the directory walked and the dependency map merged into the
+     * result always belong to the same project.
+     */
     @Override
     public CompletableFuture<ResourceResponse> availableResources(ResourceParam param) {
 
         ProjectContext ctx = StringUtils.isNotBlank(param.customProjectUri)
-                ? resolveByUri(param.customProjectUri)
-                : resolveByProjectUri(param.projectUri);
+                ? resolveByProjectUri(param.customProjectUri)
+                : resolveByUriOrProjectUri(param.getDocumentUri(), param.projectUri);
         String effectivePath = StringUtils.isNotBlank(param.projectPath) ? param.projectPath
                 : StringUtils.isNotBlank(param.customProjectUri) ? param.customProjectUri
                 : ctx != null ? ctx.getProjectUri() : null;
