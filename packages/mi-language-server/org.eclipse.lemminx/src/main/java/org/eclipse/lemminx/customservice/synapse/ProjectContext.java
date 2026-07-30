@@ -493,7 +493,8 @@ public class ProjectContext {
      */
     private void packHttpConnector() {
 
-        if (Utils.compareVersions(projectServerVersion, Constant.MI_440_VERSION) < 0) {
+        if (Utils.compareVersions(projectServerVersion, Constant.MI_440_VERSION) < 0
+                || !Utils.hasDependency(projectUri, Constant.HTTP_CONNECTOR_ARTIFACT_ID)) {
             return;
         }
         String projectId = new File(projectUri).getName() + "_" + Utils.getHash(projectUri);
