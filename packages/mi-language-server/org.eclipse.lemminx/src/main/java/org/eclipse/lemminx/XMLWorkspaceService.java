@@ -106,10 +106,13 @@ public class XMLWorkspaceService implements WorkspaceService, IXMLCommandService
 		if (params.getEvent().getAdded() != null) {
 			for (org.eclipse.lsp4j.WorkspaceFolder folder : params.getEvent().getAdded()) {
 				try {
-					java.nio.file.Path schemaDir = org.eclipse.lemminx.customservice.synapse.utils.Utils.copyXSDFiles(folder.getUri());
+					// copyXSDFiles() reads the project's pom.xml to pick the MI-version schema set, so it
+					// needs the filesystem path — handing it the file:// URI makes the pom lookup fail and
+					// silently falls back to DEFAULT_MI_VERSION's XSDs (the initialize path passes a path too).
+					String projectPath = org.eclipse.lemminx.customservice.synapse.utils.Utils.getAbsolutePath(folder.getUri());
+					java.nio.file.Path schemaDir = org.eclipse.lemminx.customservice.synapse.utils.Utils.copyXSDFiles(projectPath);
 					xmlLanguageServer.addWorkspaceSchema(folder.getUri(), schemaDir);
 					hasSchemaChanges = true;
-					String projectPath = org.eclipse.lemminx.customservice.synapse.utils.Utils.getAbsolutePath(folder.getUri());
 					xmlLanguageServer.addWorkspaceProjectContext(folder.getUri(), projectPath, schemaDir);
 				} catch (Exception e) {
 					log.log(Level.SEVERE, "Failed to copy XSD files for workspace folder: " + folder.getUri() + ". Error: " + e.getMessage());
