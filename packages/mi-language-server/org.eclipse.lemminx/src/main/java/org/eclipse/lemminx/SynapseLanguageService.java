@@ -178,11 +178,24 @@ import java.util.logging.Logger;
  * URI in its parameters, when one is present) and delegates to that context's handlers, so documents
  * from different open MI projects are served by their own isolated connector/mediator/resource state.
  *
- * <p>Requests whose parameters carry no resolvable document/folder URI fall back to the
- * {@link #defaultContext} — the first project registered at {@code initialize} time (the sole project,
- * for today's single-root client). Adding an explicit {@code projectUri} to those few request types so
- * they too can target a specific project in a multi-root workspace is left to the client-side follow-up
- * work, per the multi-project execution plan.
+ * <p><b>There is no default project.</b> A request whose parameters carry no resolvable
+ * document/folder URI resolves to {@code null} and is answered with an empty/failed result, never with
+ * another project's data. This is deliberate: the previous behaviour fell back to the first project
+ * registered at {@code initialize} time, which made a supplied-but-unmatched project reference
+ * indistinguishable from an absent one and silently served the wrong project — see the six routing
+ * defects recorded in the multi-project findings log, every one of which this fallback concealed.
+ *
+ * <p>The two situations are now separated:
+ * <ul>
+ *   <li><i>absent</i> — no project-identifying field at all. Resolves to {@code null}; the caller
+ *       returns its empty result. Logged at {@code FINE}, since some flows legitimately have none.</li>
+ *   <li><i>unmatched</i> — a field was supplied but matched no registered project. Resolves to
+ *       {@code null} and is logged at {@code WARNING}, because it always indicates a bug in either the
+ *       client's project reference or this facade's choice of resolver.</li>
+ * </ul>
+ *
+ * <p>Call sites that still cannot name their project are tagged {@code TODO(unrouted-request)} and
+ * listed in the multi-project endpoint-routing coverage document. Grep for that tag to find them.
  */
 public class SynapseLanguageService implements ISynapseLanguageService {
 
@@ -194,12 +207,21 @@ public class SynapseLanguageService implements ISynapseLanguageService {
         }
     };
 
-    // Published once init() loads deps; read through so RPC re-loads are reflected automatically.
+    // Test seam only — see setLoadedResourceFinder. Never populated in production.
     private static volatile AbstractResourceFinderHolder loadedResourceFinderHolder;
 
     /**
-     * Dependent integration-project resources loaded at LS init for the default project. Empty before
-     * init runs (e.g. unit tests that exercise participants directly).
+     * Dependent integration-project resources for callers that could not resolve a {@link ProjectContext}.
+     *
+     * <p><b>Always empty in production.</b> It used to be seeded from the default project at
+     * {@code init} time, which meant a document belonging to no resolvable project was validated
+     * against the <i>first</i> project's {@code .car} dependencies — resolving references that should
+     * not resolve and inventing duplicate-name clashes. With the default project gone, nothing seeds
+     * it, so an unresolvable document now sees no dependent artifacts at all, which is the correct
+     * answer rather than an arbitrary one.
+     *
+     * <p>It remains only as a seam for tests that drive the diagnostics participant directly, without
+     * a live {@code WorkspaceManager} to resolve against.
      */
     public static Map<String, ResourceResponse> getLoadedDependentResources() {
         AbstractResourceFinderHolder holder = loadedResourceFinderHolder;
@@ -207,9 +229,12 @@ public class SynapseLanguageService implements ISynapseLanguageService {
     }
 
     /**
-     * Publishes a pre-loaded finder so {@link #getLoadedDependentResources()} sees its map. Called
-     * internally by {@link #init} and by tests that exercise cross-project reference validation
-     * without going through a full LS initialisation.
+     * Publishes a pre-loaded finder so {@link #getLoadedDependentResources()} sees its map.
+     *
+     * <p>Called <b>only</b> by tests that exercise cross-project reference validation without a full
+     * LS initialisation. Production code must resolve dependent resources from the document's own
+     * {@link ProjectContext}; seeding a process-wide finder from one project is what this class no
+     * longer does.
      */
     public static void setLoadedResourceFinder(org.eclipse.lemminx.customservice.synapse.resourceFinder.AbstractResourceFinder finder) {
         loadedResourceFinderHolder = finder != null ? finder::getDependentResourcesMap : null;
@@ -243,12 +268,6 @@ public class SynapseLanguageService implements ISynapseLanguageService {
     private DynamicFieldsHandler dynamicFieldsHandler;
     private final URIResolverExtensionManager uriResolverExtensionManager;
 
-    /**
-     * The project this facade falls back to for RPCs whose parameters carry no resolvable document
-     * URI. Populated from {@link XMLLanguageServer#getDefaultProjectContext()} during {@link #init}.
-     */
-    private ProjectContext defaultContext;
-
     public SynapseLanguageService(XMLTextDocumentService xmlTextDocumentService, XMLLanguageServer xmlLanguageServer) {
 
         this.xmlTextDocumentService = xmlTextDocumentService;
@@ -261,8 +280,7 @@ public class SynapseLanguageService implements ISynapseLanguageService {
     /**
      * Parses the {@code extensionPath}/{@code miServerPath} settings. Split out from {@link #init} so
      * {@code XMLLanguageServer} can call it before building this process's {@link ProjectContext}s
-     * (which need {@link #getMiServerPath()}), then call {@link #init} afterwards to pick up the
-     * resulting default context.
+     * (which need {@link #getMiServerPath()}), then call {@link #init} afterwards.
      */
     public void applySettings(Object settings) {
         if (settings instanceof JsonObject) {
@@ -276,43 +294,58 @@ public class SynapseLanguageService implements ISynapseLanguageService {
         }
     }
 
+    /**
+     * Completes initialisation once {@code XMLLanguageServer} has registered every workspace project.
+     *
+     * <p>This no longer captures a default project. The DB-driver classloader and the shared
+     * {@link TryOutManager} are both bound lazily, per request, by
+     * {@link #bindTryOutManager(ProjectContext, String)} — which already rebinds them to whichever
+     * project actually asked. Pre-binding them to the first project here only mattered when there was
+     * a default project to pre-bind to.
+     *
+     * @param projectUri the client's {@code rootPath}; retained for logging only
+     */
     public void init(String projectUri, Object settings, SynapseLanguageClientAPI languageClient) {
 
         this.languageClient = languageClient;
         applySettings(settings);
-        if (projectUri == null) {
-            log.log(Level.SEVERE, "Project path is null. Language server initialization failed.");
-            return;
+        int registered = xmlLanguageServer.getWorkspaceManager().getAllProjects().size();
+        if (registered == 0) {
+            log.log(Level.WARNING, "Language server initialized with no MI projects registered (rootPath: "
+                    + projectUri + "). Requests will resolve to no project until one is added.");
+        } else {
+            log.log(Level.INFO, "Language server initialized with " + registered + " MI project(s) registered.");
         }
-        ProjectContext context = xmlLanguageServer.getDefaultProjectContext();
-        if (context == null) {
-            log.log(Level.SEVERE, "No ProjectContext could be resolved for: " + projectUri);
-            return;
-        }
-        this.defaultContext = context;
-        try {
-            DynamicClassLoader.updateClassLoader(projectUri, Path.of(projectUri, "deployment", "libs").toFile());
-            this.tryOutManager = new TryOutManager(projectUri, miServerPath, context.getProjectServerVersion(),
-                    context.getConnectorHolder(), languageClient);
-        } catch (Exception e) {
-            log.log(Level.SEVERE, "Error while updating class loader for DB drivers.", e);
-        }
-        setLoadedResourceFinder(context.getResourceFinder());
     }
 
     // -------------------------------------------------------------------------
     // Dispatch — resolves the ProjectContext for a request, falling back to
-    // defaultContext when the request carries no resolvable document URI.
+    // null when the request carries no resolvable project reference. Never another project.
     // -------------------------------------------------------------------------
 
+    /**
+     * Resolves a {@link ProjectContext} from a document {@code file://} URI, or {@code null} when the
+     * document belongs to no registered project.
+     *
+     * <p>Returning {@code null} for an <i>unmatched</i> URI is the point: the caller answers with an
+     * empty result rather than another project's data. See the class javadoc.
+     */
     private ProjectContext resolveByUri(String documentUri) {
-        if (StringUtils.isNotBlank(documentUri) && xmlLanguageServer != null) {
-            ProjectContext context = xmlLanguageServer.getWorkspaceManager().getProjectForDocument(documentUri);
-            if (context != null) {
-                return context;
-            }
+        if (StringUtils.isBlank(documentUri)) {
+            log.log(Level.FINE, "Request carried no document URI; resolving to no project.");
+            return null;
         }
-        return defaultContext;
+        if (xmlLanguageServer == null) {
+            return null;
+        }
+        ProjectContext context = xmlLanguageServer.getWorkspaceManager().getProjectForDocument(documentUri);
+        if (context == null) {
+            // getProjectForDocument already logs the miss; add the facade-level consequence so the
+            // pair reads as one story in the log.
+            log.log(Level.WARNING, "No registered project for document: " + documentUri
+                    + " — request will be answered with an empty result, not another project's data.");
+        }
+        return context;
     }
 
     private ProjectContext resolve(TextDocumentIdentifier document) {
@@ -331,14 +364,18 @@ public class SynapseLanguageService implements ISynapseLanguageService {
      *
      * <p>Use this — not {@link #resolveByUri} — for any field the handler itself dereferences as a
      * path ({@code new File(..)}, {@code Path.of(..)}, {@code new ZipFile(..)}). Routing such a field
-     * through {@code resolveByUri} silently resolves every request to {@link #defaultContext}.
+     * through {@code resolveByUri} resolves every request to no project at all.
      *
      * <p>A value that is already a {@code file://} URI is passed through untouched, so this is safe
      * for the fields whose callers are inconsistent about which of the two forms they send.
+     *
+     * @return the owning project, or {@code null} if the path is blank, unparseable, or outside every
+     *         registered project
      */
     private ProjectContext resolveByPath(String filePath) {
         if (StringUtils.isBlank(filePath)) {
-            return defaultContext;
+            log.log(Level.FINE, "Request carried no file path; resolving to no project.");
+            return null;
         }
         if (filePath.startsWith("file:")) {
             return resolveByUri(filePath);
@@ -346,7 +383,8 @@ public class SynapseLanguageService implements ISynapseLanguageService {
         try {
             return resolveByUri(Path.of(filePath).toUri().toString());
         } catch (Exception e) {
-            return defaultContext;
+            log.log(Level.WARNING, "Unparseable file path in request, resolving to no project: " + filePath, e);
+            return null;
         }
     }
 
@@ -356,21 +394,38 @@ public class SynapseLanguageService implements ISynapseLanguageService {
      * this field as {@code WorkspaceFolder.uri.fsPath} — an absolute filesystem path, not the
      * {@code file://} URI {@link WorkspaceManager} registers projects under — so this resolves via
      * {@link WorkspaceManager#getProjectByPath(String)}, which matches on each context's own
-     * {@link ProjectContext#getProjectUri()} instead of the registry key.
+     * {@link ProjectContext#getProjectUri()} instead of the registry key. Both an OS path and a
+     * {@code file://} URI are accepted, since that method normalizes either form.
+     *
+     * @return the named project, or {@code null} if {@code projectUri} is blank or names no
+     *         registered project
      */
     private ProjectContext resolveByProjectUri(String projectUri) {
-        if (StringUtils.isNotBlank(projectUri) && xmlLanguageServer != null) {
-            ProjectContext context = xmlLanguageServer.getWorkspaceManager().getProjectByPath(projectUri);
-            if (context != null) {
-                return context;
-            }
+        if (StringUtils.isBlank(projectUri)) {
+            log.log(Level.FINE, "Request carried no projectUri; resolving to no project.");
+            return null;
         }
-        return defaultContext;
+        if (xmlLanguageServer == null) {
+            return null;
+        }
+        ProjectContext context = xmlLanguageServer.getWorkspaceManager().getProjectByPath(projectUri);
+        if (context == null) {
+            log.log(Level.WARNING, "No registered project matches projectUri: " + projectUri
+                    + " — request will be answered with an empty result, not another project's data.");
+        }
+        return context;
     }
 
     /**
-     * Resolves a {@link ProjectContext} preferring an explicit document URI/path when present, falling
-     * back to an explicit project root URI, and finally to {@link #defaultContext}.
+     * Resolves a {@link ProjectContext} preferring an explicit document URI/path when present, and
+     * falling back to an explicit project root URI.
+     *
+     * <p>When a document URI is supplied but matches no project, this deliberately does <i>not</i>
+     * retry with {@code projectUri}: a document that belongs to no open project is a different
+     * condition from one that was never named, and silently widening the search is how a request ends
+     * up answered by a project that does not own the document.
+     *
+     * @return the resolved project, or {@code null} if neither field identifies one
      */
     private ProjectContext resolveByUriOrProjectUri(String documentUri, String projectUri) {
         if (StringUtils.isNotBlank(documentUri)) {
@@ -391,12 +446,17 @@ public class SynapseLanguageService implements ISynapseLanguageService {
      *                           used instead of the process-global {@link #miServerPath} when this call
      *                           is what creates a new {@link TryOutManager}, so the single shared server
      *                           launches the runtime the *initiating* project expects
-     * @return the {@link TryOutManager} bound to {@code ctx}'s project, or {@code null} if a different
-     *         project's try-out is currently active and the caller should surface a conflict message
+     * <p>There is no manager to hand back when {@code ctx} is {@code null}: without a project there is
+     * no runtime version, connector set or {@code deployment/libs} to launch against. Callers surface
+     * that via {@link #tryOutUnavailableMessage(ProjectContext)}.
+     *
+     * @return the {@link TryOutManager} bound to {@code ctx}'s project, or {@code null} if {@code ctx}
+     *         is {@code null}, or if a different project's try-out is currently active — in both cases
+     *         the caller should surface {@link #tryOutUnavailableMessage(ProjectContext)}
      */
     private TryOutManager bindTryOutManager(ProjectContext ctx, String requestServerPath) {
         if (ctx == null) {
-            return tryOutManager;
+            return null;
         }
         if (tryOutManager != null && ctx.getProjectUri().equals(tryOutManager.getProjectUri())) {
             return tryOutManager;
@@ -417,6 +477,21 @@ public class SynapseLanguageService implements ISynapseLanguageService {
         tryOutManager = new TryOutManager(ctx.getProjectUri(), effectiveServerPath, ctx.getProjectServerVersion(),
                 ctx.getConnectorHolder(), languageClient);
         return tryOutManager;
+    }
+
+    /**
+     * Explains why {@link #bindTryOutManager} declined, without dereferencing a {@link TryOutManager}
+     * that may not exist. The two causes need different wording, and neither may assume one is running.
+     */
+    private String tryOutUnavailableMessage(ProjectContext ctx) {
+        if (ctx == null) {
+            return "This request does not identify an open MI project, so no try-out server could be "
+                    + "started. Reopen the file from its project folder and try again.";
+        }
+        TryOutManager active = tryOutManager;
+        return String.format("A try-out for project '%s' is already active. Stop it before starting a "
+                + "try-out for a different project.",
+                active != null ? active.getProjectUri() : "another project");
     }
 
     @Override
@@ -483,6 +558,12 @@ public class SynapseLanguageService implements ISynapseLanguageService {
             // gated on the document path — e.g. SynapseExpressionValidator only runs for files under
             // src/main/wso2mi/artifacts — so the literal "temp" fallback would silently drop them.
             // Treat a blank fileName as missing, otherwise an unusable URI would skip those checks.
+            //
+            // TODO(unrouted-request): with a blank fileName this request identifies no project, so the
+            // diagnostics participants resolve no ProjectContext and validate without connector or
+            // dependent-artifact knowledge. That is correct-but-degraded rather than wrong; the fix is
+            // for the agent/copilot caller to send an explicit projectUri, since it always knows which
+            // project it is generating for. Until then, prefer sending fileName.
             String uri = StringUtils.isBlank(param.getFileName()) ? "temp" : param.getFileName();
             // Opt-out (default off) for cross-file reference checks: the agent validates a file
             // before its referenced siblings are written, so those checks would fire spuriously.
@@ -539,7 +620,8 @@ public class SynapseLanguageService implements ISynapseLanguageService {
      * <p>Routing must land on the requesting project's {@link ProjectContext}, because the dependent
      * artifacts live in that context's {@code ResourceFinder} and nowhere else. Both the explicit
      * {@code projectUri} and the originating document are honoured so a client that supplies either
-     * one is routed correctly; only a request carrying neither falls back to {@link #defaultContext}.
+     * one is routed correctly; a request identifying no project returns an empty
+     * {@link ResourceResponse} rather than another project's artifact list.
      *
      * <p>{@code customProjectUri} is the debug-flow override: the debugger asks for a project that
      * may not be open in the workspace at all, so it names the directory to scan directly. It is a
@@ -767,27 +849,6 @@ public class SynapseLanguageService implements ISynapseLanguageService {
         }
     }
 
-    /**
-     * Reloads the default project's connectors. Used as a fallback by {@code XMLWorkspaceService} when
-     * a watched connector {@code .zip} change can't be resolved to a specific registered project.
-     */
-    public void updateConnectors() {
-
-        if (defaultContext != null) {
-            defaultContext.updateConnectors();
-        }
-    }
-
-    /**
-     * Reloads the default project's inbound connectors. Same fallback role as {@link #updateConnectors()}.
-     */
-    public void updateInboundConnectors() {
-
-        if (defaultContext != null) {
-            defaultContext.updateInboundConnectors();
-        }
-    }
-
     @Override
     public CompletableFuture<List<String>> getRegistryFiles(TextDocumentIdentifier param) {
 
@@ -995,6 +1056,12 @@ public class SynapseLanguageService implements ISynapseLanguageService {
         return CompletableFuture.supplyAsync(() -> response);
     }
 
+    // TODO(unrouted-request): the DB-driver group below (addDBDriver, removeDBDriver, modifyDBDriver)
+    // and testDBConnection/loadDriverAndTestConnection above pass requestParams.projectUri straight to
+    // QueryGenerator/DynamicClassLoader without resolving it through WorkspaceManager. The value is
+    // therefore never validated: a stale or wrong projectUri silently addresses another project's
+    // driver classpath instead of failing. Route them through resolveByProjectUri and pass
+    // ctx.getProjectUri(), as checkDBDriver already does.
     @Override
     public CompletableFuture<Boolean> addDBDriver(ModifyDriverRequestParams requestParams) {
         boolean isSuccess = QueryGenerator.addDriverToClassPath(requestParams.addDriverPath, requestParams.className,
@@ -1089,10 +1156,7 @@ public class SynapseLanguageService implements ISynapseLanguageService {
         return CompletableFuture.supplyAsync(() -> {
             TryOutManager manager = bindTryOutManager(ctx, request.getServerPath());
             if (manager == null) {
-                return new MediatorTryoutInfo(String.format(
-                        "A try-out for project '%s' is already active. Stop it before starting a try-out for a "
-                                + "different project.",
-                        tryOutManager.getProjectUri()));
+                return new MediatorTryoutInfo(tryOutUnavailableMessage(ctx));
             }
             return manager.tryout(request);
         });
@@ -1135,10 +1199,7 @@ public class SynapseLanguageService implements ISynapseLanguageService {
         return CompletableFuture.supplyAsync(() -> {
             TryOutManager manager = bindTryOutManager(ctx, null);
             if (manager == null) {
-                return new TestConnectionResponse(String.format(
-                        "A try-out for project '%s' is already active. Stop it before testing a connector "
-                                + "connection for a different project.",
-                        tryOutManager.getProjectUri()));
+                return new TestConnectionResponse(tryOutUnavailableMessage(ctx));
             }
             return manager.testConnectorConnection(request);
         });
@@ -1152,6 +1213,11 @@ public class SynapseLanguageService implements ISynapseLanguageService {
         return CompletableFuture.supplyAsync(() -> response);
     }
 
+    // TODO(unrouted-request): expressionCompletion and signatureHelp carry a documentUri but never
+    // resolve a ProjectContext from it — the providers below read the file directly and derive what
+    // they need from the path. They therefore ignore per-project connector and dependency state, so a
+    // connector operation available in one open project is offered in all of them. Route these through
+    // resolveByPath and pass the context to the providers.
     @Override
     public CompletableFuture<ICompletionResponse> expressionCompletion(ExpressionParam param) {
 
@@ -1388,6 +1454,9 @@ public class SynapseLanguageService implements ISynapseLanguageService {
         return CompletableFuture.supplyAsync(() -> SyntaxTreeGenerator.getArtifactType(artifactIdentifier.getUri()));
     }
 
+    // TODO(unrouted-request): getDynamicFields, getStoredProcedures and fetchTables are served by one
+    // process-global dynamicFieldsHandler shared by every open project, so neither its state nor its
+    // caches are per-project. Give each ProjectContext its own handler, or key this one by project.
     @Override
     public CompletableFuture<Map<String, List<DynamicField>>> getDynamicFields(GetDynamicFieldsRequest request) {
 
