@@ -324,12 +324,24 @@ public class SynapseLanguageService implements ISynapseLanguageService {
     }
 
     /**
-     * Resolves a {@link ProjectContext} from a plain filesystem path (e.g. {@link MediatorTryoutRequest#getFile()},
-     * which is a raw path rather than a {@code file://} URI) by converting it to a URI first.
+     * Resolves a {@link ProjectContext} from a request field that carries a filesystem path (e.g.
+     * {@link MediatorTryoutRequest#getFile()}) by converting it to a URI first, since
+     * {@link WorkspaceManager#getProjectForDocument} prefix-matches against the {@code file://} URIs
+     * the registry is keyed by and a bare OS path can never match one.
+     *
+     * <p>Use this — not {@link #resolveByUri} — for any field the handler itself dereferences as a
+     * path ({@code new File(..)}, {@code Path.of(..)}, {@code new ZipFile(..)}). Routing such a field
+     * through {@code resolveByUri} silently resolves every request to {@link #defaultContext}.
+     *
+     * <p>A value that is already a {@code file://} URI is passed through untouched, so this is safe
+     * for the fields whose callers are inconsistent about which of the two forms they send.
      */
     private ProjectContext resolveByPath(String filePath) {
         if (StringUtils.isBlank(filePath)) {
             return defaultContext;
+        }
+        if (filePath.startsWith("file:")) {
+            return resolveByUri(filePath);
         }
         try {
             return resolveByUri(Path.of(filePath).toUri().toString());
@@ -813,7 +825,9 @@ public class SynapseLanguageService implements ISynapseLanguageService {
     @Override
     public CompletableFuture<List<String>> getResourceUsages(ResourceUsagesRequest resourceUsagesRequest) {
 
-        ProjectContext ctx = resolveByUri(resourceUsagesRequest.getResourceFilePath());
+        // resourceFilePath is a filesystem path (the project explorer passes it straight to
+        // Uri.file(..)), so it must be resolved as a path, not as a document URI.
+        ProjectContext ctx = resolveByPath(resourceUsagesRequest.getResourceFilePath());
         List<String> resourceUsagesProjectIdentifiers = ctx != null
                 ? ResourceUsageFinder.findResourceUsagesProjectIdentifiers(ctx.getProjectUri(),
                         resourceUsagesRequest.getResourceFilePath(), ctx.getConnectorHolder(), ctx.isLegacyProject())
@@ -921,7 +935,8 @@ public class SynapseLanguageService implements ISynapseLanguageService {
     @Override
     public CompletableFuture<InboundConnectorResponse> getInboundConnectorSchema(InboundConnectorParam param) {
 
-        ProjectContext ctx = resolveByUri(param.documentPath);
+        // documentPath is a filesystem path — the handler below does new File(param.documentPath).
+        ProjectContext ctx = resolveByPath(param.documentPath);
         return CompletableFuture.supplyAsync(() -> {
             if (ctx == null) {
                 return null;
@@ -1049,7 +1064,9 @@ public class SynapseLanguageService implements ISynapseLanguageService {
     @Override
     public CompletableFuture<SynapseConfigResponse> generateSynapseConfig(SynapseConfigRequest synapseConfigRequest) {
 
-        ProjectContext ctx = resolveByUri(synapseConfigRequest.documentUri);
+        // documentUri is a filesystem path despite the name — MediatorHandler.generateSynapseConfig
+        // does Files.exists(Path.of(documentUri)), and the client compares it to doc.uri.fsPath.
+        ProjectContext ctx = resolveByPath(synapseConfigRequest.documentUri);
         return CompletableFuture.supplyAsync(
                 () -> ctx != null ? ctx.getMediatorHandler().generateSynapseConfig(synapseConfigRequest.documentUri,
                         synapseConfigRequest.range, synapseConfigRequest.mediatorType, synapseConfigRequest.values,
@@ -1166,7 +1183,9 @@ public class SynapseLanguageService implements ISynapseLanguageService {
     @Override
     public CompletableFuture<HelperPanelData> expressionHelperData(ExpressionParam param) {
 
-        ProjectContext ctx = resolveByUri(param.getDocumentUri());
+        // documentUri is a filesystem path despite the name — ExpressionHelperProvider does
+        // new File(documentUri), which throws InvalidPathException on a file:// URI.
+        ProjectContext ctx = resolveByPath(param.getDocumentUri());
         return CompletableFuture.supplyAsync(() -> ctx != null
                 ? ctx.getExpressionHelperProvider().getExpressionHelperData(param) : null);
     }
@@ -1397,7 +1416,8 @@ public class SynapseLanguageService implements ISynapseLanguageService {
     @Override
     public CompletableFuture<DriverMavenCoordinatesResponse> getDriverMavenCoordinates(
             DriverMavenCoordinatesRequest request){
-        ProjectContext ctx = resolveByUri(request.getFilePath());
+        // filePath is the JDBC driver's path on disk, taken from a connection parameter.
+        ProjectContext ctx = resolveByPath(request.getFilePath());
         return CompletableFuture.supplyAsync(() -> ctx != null ? ConnectorDownloadManager.getDriverMavenCoordinates(
                 request.getFilePath(),
                 request.getConnectorName(),
@@ -1479,7 +1499,8 @@ public class SynapseLanguageService implements ISynapseLanguageService {
     @Override
     public CompletableFuture<ConnectorDetails> isDuplicateConnector(ConnectorDetails connectorDetails) {
 
-        ProjectContext ctx = resolveByUri(connectorDetails.connectorPath);
+        // connectorPath is the zip's path on disk — the loader opens it with new ZipFile(..).
+        ProjectContext ctx = resolveByPath(connectorDetails.connectorPath);
         return CompletableFuture.supplyAsync(() -> ctx != null
                 ? ctx.getConnectorLoader().isDuplicateConnector(connectorDetails.connectorPath) : connectorDetails);
     }
