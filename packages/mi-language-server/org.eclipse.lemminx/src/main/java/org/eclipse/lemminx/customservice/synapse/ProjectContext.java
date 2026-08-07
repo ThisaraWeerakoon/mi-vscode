@@ -25,6 +25,7 @@ import org.eclipse.lemminx.customservice.synapse.connectors.ConnectorHolder;
 import org.eclipse.lemminx.customservice.synapse.connectors.NewProjectConnectorLoader;
 import org.eclipse.lemminx.customservice.synapse.connectors.OldProjectConnectorLoader;
 import org.eclipse.lemminx.customservice.synapse.connectors.SchemaGenerate;
+import org.eclipse.lemminx.customservice.synapse.dataService.DynamicClassLoader;
 import org.eclipse.lemminx.customservice.synapse.expression.ExpressionHelperProvider;
 import org.eclipse.lemminx.customservice.synapse.inbound.conector.InboundConnectorHolder;
 import org.eclipse.lemminx.customservice.synapse.mediatorService.MediatorHandler;
@@ -229,6 +230,8 @@ public class ProjectContext {
      *   <li>{@link AbstractResourceFinder} — discovers and indexes dependent
      *       resources (endpoints, sequences, etc.)</li>
      *   <li>Resolves and stores the {@code synapseXsdPath}</li>
+     *   <li>{@link DynamicClassLoader} — seeds this project's DB-driver classloader
+     *       from its own {@code deployment/libs}</li>
      * </ol>
      *
      * @param miServerPath   absolute path to the local MI server installation
@@ -296,9 +299,22 @@ public class ProjectContext {
         // directory when given, so generated schemas land where the validation engine already looks.
         this.synapseXsdPath = synapseXsdPath != null ? synapseXsdPath : Utils.copyXSDFiles(projectUri);
 
+        // 9. Seed this project's DB-driver classloader from its own deployment/libs, so drivers already
+        // sitting on disk are visible to checkDBDriver/testDBConnection without the user re-adding them.
+        // The classloader registry is in-memory and dies with the process, while the jars do not, so this
+        // has to run on every start. It belongs here — once per registered project, including folders
+        // added after initialize — rather than in SynapseLanguageService.init, which could only ever seed
+        // one project. Never fatal: an unreadable jar must not stop the project from registering.
+        try {
+            DynamicClassLoader.updateClassLoader(projectUri, Path.of(projectUri, "deployment", "libs").toFile());
+        } catch (Exception e) {
+            log.log(Level.WARNING,
+                    "Could not seed the DB-driver classloader from deployment/libs for: " + projectUri, e);
+        }
+
         this.initialized = true;
 
-        // 9. Load this project's connectors now that the loader and XSD path are ready, and pack the
+        // 10. Load this project's connectors now that the loader and XSD path are ready, and pack the
         // bundled HTTP connector in if this project's MI version needs it.
         updateConnectors();
         packHttpConnector();
