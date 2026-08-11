@@ -250,12 +250,23 @@ public class SynapseLanguageService implements ISynapseLanguageService {
 
     /**
      * Resolves the {@link ProjectContext} for a document URI, for callers with no DI path to the live
-     * {@code XMLLanguageServer}/{@code WorkspaceManager} (e.g. {@code SynapseDiagnosticsParticipant}).
-     * Returns {@code null} if no project is registered for the document (or none has initialized yet).
+     * {@code XMLLanguageServer}/{@code WorkspaceManager} (e.g. {@code SynapseDiagnosticsParticipant},
+     * {@code SyntaxTreeUtils}). Returns {@code null} if no project is registered for the document (or
+     * none has initialized yet).
+     *
+     * <p>This resolves through {@link WorkspaceManager#getProjectForFile} — the path-based lookup —
+     * rather than {@link WorkspaceManager#getProjectForDocument}, because the URIs reaching here are
+     * <em>not</em> always the ones the client sent. A {@link org.eclipse.lemminx.dom.DOMDocument} that
+     * lemminx opened from disk itself carries {@code path.toUri().toString()}
+     * ({@code Utils.getDOMDocument(File)}), which on Windows spells the drive-letter colon differently
+     * from the workspace-folder URIs the registry is keyed by ({@code c:} vs. {@code c%3A}) and so can
+     * never prefix-match one. The consequence is silent and severe rather than a visible error: callers
+     * fall back to a default {@code MediatorFactoryFinder} with an empty {@code ConnectorHolder}, so
+     * every connector call ({@code http.get}, …) parses as an {@code InvalidMediator}.
      */
     public static ProjectContext resolveProjectContext(String documentUri) {
         org.eclipse.lemminx.customservice.synapse.WorkspaceManager manager = workspaceManagerHolder;
-        return manager != null && documentUri != null ? manager.getProjectForDocument(documentUri) : null;
+        return manager != null && documentUri != null ? manager.getProjectForFile(documentUri) : null;
     }
 
     private XMLTextDocumentService xmlTextDocumentService;
@@ -361,16 +372,24 @@ public class SynapseLanguageService implements ISynapseLanguageService {
 
     /**
      * Resolves a {@link ProjectContext} from a request field that carries a filesystem path (e.g.
-     * {@link MediatorTryoutRequest#getFile()}) by converting it to a URI first, since
-     * {@link WorkspaceManager#getProjectForDocument} prefix-matches against the {@code file://} URIs
-     * the registry is keyed by and a bare OS path can never match one.
+     * {@link MediatorTryoutRequest#getFile()}) by matching normalized {@link java.nio.file.Path}s via
+     * {@link WorkspaceManager#getProjectForFile}.
      *
      * <p>Use this — not {@link #resolveByUri} — for any field the handler itself dereferences as a
      * path ({@code new File(..)}, {@code Path.of(..)}, {@code new ZipFile(..)}). Routing such a field
      * through {@code resolveByUri} resolves every request to no project at all.
      *
-     * <p>A value that is already a {@code file://} URI is passed through untouched, so this is safe
-     * for the fields whose callers are inconsistent about which of the two forms they send.
+     * <p><b>Do not "fix" this by converting the path to a URI and delegating to {@link #resolveByUri}.</b>
+     * That was the previous implementation and it resolved to no project for <em>every</em> document on
+     * Windows: the registry is keyed by the workspace-folder URIs exactly as the client sent them, and
+     * VS Code percent-encodes the drive-letter colon ({@code file:///c%3A/Users/...}) where
+     * {@code Path.toUri()} does not ({@code file:///c:/Users/...}), so the prefix match could never
+     * hit. Comparing as paths removes URI spelling from the equation entirely. Note that a URI-based
+     * test harness can hide this — Node's {@code pathToFileURL} emits the same unencoded spelling
+     * Java does, so a probe keyed that way matches the buggy form and reports success.
+     *
+     * <p>A value that is already a {@code file://} URI is accepted too, so this is safe for the fields
+     * whose callers are inconsistent about which of the two forms they send.
      *
      * @return the owning project, or {@code null} if the path is blank, unparseable, or outside every
      *         registered project
@@ -380,15 +399,17 @@ public class SynapseLanguageService implements ISynapseLanguageService {
             log.log(Level.FINE, "Request carried no file path; resolving to no project.");
             return null;
         }
-        if (filePath.startsWith("file:")) {
-            return resolveByUri(filePath);
-        }
-        try {
-            return resolveByUri(Path.of(filePath).toUri().toString());
-        } catch (Exception e) {
-            log.log(Level.WARNING, "Unparseable file path in request, resolving to no project: " + filePath, e);
+        if (xmlLanguageServer == null) {
             return null;
         }
+        ProjectContext context = xmlLanguageServer.getWorkspaceManager().getProjectForFile(filePath);
+        if (context == null) {
+            // getProjectForFile already logs the miss; add the facade-level consequence so the pair
+            // reads as one story in the log.
+            log.log(Level.WARNING, "No registered project for file: " + filePath
+                    + " — request will be answered with an empty result, not another project's data.");
+        }
+        return context;
     }
 
     /**
@@ -1192,12 +1213,12 @@ public class SynapseLanguageService implements ISynapseLanguageService {
         // registered, so a folder removed from the workspace can still shut its own try-out down.
         return CompletableFuture.supplyAsync(() -> {
             if (tryOutManager == null) {
-                return false;
+                return true;
             }
             String requestProjectUri = request != null ? request.getProjectUri() : null;
             if (StringUtils.isNotBlank(requestProjectUri)
                     && !WorkspaceManager.isSameProjectPath(requestProjectUri, tryOutManager.getProjectUri())) {
-                return false;
+                return true;
             }
             return tryOutManager.shutdown();
         });
