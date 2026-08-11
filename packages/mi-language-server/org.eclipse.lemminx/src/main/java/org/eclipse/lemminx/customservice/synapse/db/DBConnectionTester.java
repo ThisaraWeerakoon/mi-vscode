@@ -28,7 +28,6 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.sql.Connection;
 import java.sql.Driver;
-import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
@@ -89,15 +88,26 @@ public class DBConnectionTester {
         try {
             URLClassLoader urlClassLoader = DynamicClassLoader.getClassLoader(projectUri);
 
-            Driver driver = (Driver) Class.forName(className, true, urlClassLoader).newInstance();
-            DriverManager.registerDriver(new DriverShim(driver));
+            // Connect through the driver instance loaded from this project's classloader instead of going
+            // via DriverManager. DriverManager's registry is process-global and consulted in registration
+            // order, so with several projects open the first project to register a driver for a given URL
+            // scheme would service every other project's connections too - silently defeating the
+            // per-project isolation DynamicClassLoader exists to provide.
+            Driver driver = (Driver) Class.forName(className, true, urlClassLoader).getDeclaredConstructor()
+                    .newInstance();
+            Properties props = new Properties();
 
             // Check username and password are empty due to Derby db can connect without username and password
-            if (connectionUrl.contains(DBConstant.DBTypes.DB_TYPE_DERBY_CONN) && username.equals(
-                    Constant.EMPTY_STRING) && password.equals(Constant.EMPTY_STRING)) {
-                connection = DriverManager.getConnection(connectionUrl);
-            } else {
-                connection = DriverManager.getConnection(connectionUrl, username, password);
+            if (!connectionUrl.contains(DBConstant.DBTypes.DB_TYPE_DERBY_CONN) || !username.equals(
+                    Constant.EMPTY_STRING) || !password.equals(Constant.EMPTY_STRING)) {
+                props.setProperty(Constant.USER, username);
+                props.setProperty(Constant.PASSWORD, password);
+            }
+            connection = driver.connect(connectionUrl, props);
+            if (connection == null) {
+                // Driver.connect returns null rather than throwing when it does not recognise the URL,
+                // where DriverManager used to raise "No suitable driver found". Log so it is not silent.
+                LOGGER.log(Level.SEVERE, "Driver " + className + " did not accept the connection URL.");
             }
 
         } catch (SQLException e) {
