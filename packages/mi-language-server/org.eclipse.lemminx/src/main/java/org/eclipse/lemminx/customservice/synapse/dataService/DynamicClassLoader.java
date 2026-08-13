@@ -21,9 +21,8 @@ import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.HashSet;
+import java.util.HashMap;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -46,28 +45,36 @@ public class DynamicClassLoader {
         private static final ClassLoader PARENT = DynamicClassLoader.class.getClassLoader();
 
         private URLClassLoader classLoader;
-        private final Set<URL> currentUrls = new HashSet<>();
+        // Keyed by canonical path rather than URL, since URL/File path equality is case-sensitive
+        // and breaks deduplication and removal on case-insensitive filesystems (e.g. Windows).
+        private final Map<String, URL> currentUrls = new HashMap<>();
 
         synchronized void addDirectory(File jarDirectory) throws Exception {
             File[] jarFiles = jarDirectory.listFiles((dir, name) -> name.endsWith(".jar"));
             if (jarFiles == null || jarFiles.length == 0) {
                 return;
             }
-            Set<URL> newUrls = new HashSet<>();
+            boolean changed = false;
             for (File jarFile : jarFiles) {
-                newUrls.add(jarFile.toURI().toURL());
+                String jarKey = jarFile.getCanonicalPath();
+                if (!currentUrls.containsKey(jarKey)) {
+                    currentUrls.put(jarKey, jarFile.toURI().toURL());
+                    changed = true;
+                }
             }
-            Set<URL> urlsToAdd = new HashSet<>(newUrls);
-            urlsToAdd.removeAll(currentUrls);
-            if (!urlsToAdd.isEmpty()) {
-                currentUrls.addAll(urlsToAdd);
+            if (changed) {
                 rebuild();
             }
         }
 
         synchronized void updateJar(File jarFile, boolean addJar) throws Exception {
-            URL jarUrl = jarFile.toURI().toURL();
-            boolean changed = addJar ? currentUrls.add(jarUrl) : currentUrls.remove(jarUrl);
+            String jarKey = jarFile.getCanonicalPath();
+            boolean changed;
+            if (addJar) {
+                changed = currentUrls.putIfAbsent(jarKey, jarFile.toURI().toURL()) == null;
+            } else {
+                changed = currentUrls.remove(jarKey) != null;
+            }
             if (changed) {
                 rebuild();
             }
@@ -81,7 +88,7 @@ public class DynamicClassLoader {
         }
 
         private void rebuild() {
-            classLoader = new URLClassLoader(currentUrls.toArray(new URL[0]), PARENT);
+            classLoader = new URLClassLoader(currentUrls.values().toArray(new URL[0]), PARENT);
         }
     }
 
