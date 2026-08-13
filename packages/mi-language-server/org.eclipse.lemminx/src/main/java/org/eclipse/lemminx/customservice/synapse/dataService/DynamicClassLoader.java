@@ -22,7 +22,9 @@ import java.net.URLClassLoader;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -48,6 +50,20 @@ public class DynamicClassLoader {
         // Keyed by canonical path rather than URL, since URL/File path equality is case-sensitive
         // and breaks deduplication and removal on case-insensitive filesystems (e.g. Windows).
         private final Map<String, URL> currentUrls = new HashMap<>();
+        // Which of those jars actually existed on disk when the current loader was built.
+        //
+        // A URLClassLoader is only valid for the on-disk state it was constructed against: the JDK
+        // pops each URL off its search path the first time it opens it, and an open that fails
+        // (missing jar) drops the URL permanently, so that loader can never see the jar reappear.
+        // Registering the jar again does not help either - the key is already in currentUrls, so
+        // there is nothing to "change" and no rebuild is triggered. That is how deleting a driver
+        // from deployment/libs and then re-adding it through the datasource wizard leaves
+        // checkDBDriver reporting the driver as missing for the rest of the session.
+        //
+        // Tracking existence at build time turns that into something loader() can detect, and also
+        // covers the reverse case (a jar deleted after the loader opened it) and jars dropped into
+        // deployment/libs by hand, neither of which goes through updateJar at all.
+        private Set<String> presentWhenBuilt = Set.of();
 
         synchronized void addDirectory(File jarDirectory) throws Exception {
             File[] jarFiles = jarDirectory.listFiles((dir, name) -> name.endsWith(".jar"));
@@ -81,14 +97,34 @@ public class DynamicClassLoader {
         }
 
         synchronized URLClassLoader loader() {
-            if (classLoader == null) {
-                rebuild();
+            Set<String> present = presentJars();
+            if (classLoader == null || !present.equals(presentWhenBuilt)) {
+                rebuild(present);
             }
             return classLoader;
         }
 
+        /** Canonical paths of the registered jars that are currently readable files on disk. */
+        private Set<String> presentJars() {
+            Set<String> present = new HashSet<>();
+            for (String jarKey : currentUrls.keySet()) {
+                if (new File(jarKey).isFile()) {
+                    present.add(jarKey);
+                }
+            }
+            return present;
+        }
+
         private void rebuild() {
+            rebuild(presentJars());
+        }
+
+        // Missing jars stay in the URL array: currentUrls is the record of what this project has
+        // registered, and a URL the loader cannot open is simply skipped. Dropping them here would
+        // instead lose them for good, since nothing re-registers a jar that only reappears on disk.
+        private void rebuild(Set<String> present) {
             classLoader = new URLClassLoader(currentUrls.values().toArray(new URL[0]), PARENT);
+            presentWhenBuilt = present;
         }
     }
 

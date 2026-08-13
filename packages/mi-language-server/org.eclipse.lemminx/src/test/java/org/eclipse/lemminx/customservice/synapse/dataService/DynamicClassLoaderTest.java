@@ -26,6 +26,8 @@ import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class DynamicClassLoaderTest {
@@ -82,6 +84,43 @@ public class DynamicClassLoaderTest {
         URLClassLoader after = DynamicClassLoader.getClassLoader(project);
 
         assertNotEquals(before, after, "A fresh loader must be created after the project entry is removed");
+    }
+
+    @Test
+    void loaderIsRebuiltWhenADeletedJarIsRestored(@TempDir Path tempDir) throws Exception {
+        String project = tempDir.resolve("restore_" + System.nanoTime()).toString();
+        Path libs = Files.createDirectories(Path.of(project, "deployment", "libs"));
+        File jar = createEmptyJar(libs.resolve("driver.jar"));
+
+        DynamicClassLoader.updateClassLoader(project, libs.toFile());
+        URLClassLoader seeded = DynamicClassLoader.getClassLoader(project);
+
+        // The user clears deployment/libs by hand while the server is running.
+        Files.delete(jar.toPath());
+        URLClassLoader whileMissing = DynamicClassLoader.getClassLoader(project);
+        assertNotSame(seeded, whileMissing, "A loader must not be reused across a jar disappearing from disk");
+
+        // The datasource wizard copies the jar back to the same path and re-registers it. The key is
+        // already known, so the add itself is a no-op - the rebuild has to come from the restored file.
+        createEmptyJar(libs.resolve("driver.jar"));
+        DynamicClassLoader.updateJarInClassLoader(project, jar, true);
+        URLClassLoader afterRestore = DynamicClassLoader.getClassLoader(project);
+
+        assertNotSame(whileMissing, afterRestore, "A loader built while the jar was missing has dropped that "
+                + "URL for good, so a restored jar must be served by a rebuilt loader");
+    }
+
+    @Test
+    void loaderIsStableWhileTheJarsOnDiskAreUnchanged(@TempDir Path tempDir) throws Exception {
+        String project = tempDir.resolve("stable_" + System.nanoTime()).toString();
+        Path libs = Files.createDirectories(Path.of(project, "deployment", "libs"));
+        createEmptyJar(libs.resolve("driver.jar"));
+
+        DynamicClassLoader.updateClassLoader(project, libs.toFile());
+
+        assertSame(DynamicClassLoader.getClassLoader(project), DynamicClassLoader.getClassLoader(project),
+                "An unchanged deployment/libs must keep handing back the same loader, so classes already "
+                        + "loaded through it stay identity-comparable");
     }
 
     private File createEmptyJar(Path path) throws IOException {
