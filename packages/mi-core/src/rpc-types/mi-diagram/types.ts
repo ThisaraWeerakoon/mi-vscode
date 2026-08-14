@@ -2435,6 +2435,7 @@ export interface DriverMavenCoordinatesRequest {
     filePath: string;
     connectorName: string;
     connectionType: string;
+    projectUri?: string;
 }
 
 export interface DriverMavenCoordinatesResponse {

@@ -6648,7 +6648,9 @@ ${keyValuesXML}`;
         return new Promise(async (resolve) => {
 
             const langClient = await MILanguageClient.getInstance(this.projectUri);
-            const res = await langClient.getDriverMavenCoordinates(params);
+            // params.filePath is blank until the driver has been downloaded, so the server cannot
+            // route this request by it — name the project explicitly, as the other driver RPCs do.
+            const res = await langClient.getDriverMavenCoordinates({ ...params, projectUri: this.projectUri });
             resolve(res);
 
         });

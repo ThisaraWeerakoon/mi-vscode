@@ -459,6 +459,23 @@ public class SynapseLanguageService implements ISynapseLanguageService {
     }
 
     /**
+     * The {@link #resolveByPath} counterpart of {@link #resolveByUriOrProjectUri}: prefers a
+     * filesystem path field when the request carries one, and falls back to an explicit project root.
+     *
+     * <p>Use this for requests whose path field is <em>legitimately optional</em> — a path that is
+     * blank by design, not by omission. Routing such a request on the path alone resolves it to no
+     * project exactly in the case it was meant to serve.
+     *
+     * @return the resolved project, or {@code null} if neither field identifies one
+     */
+    private ProjectContext resolveByPathOrProjectUri(String filePath, String projectUri) {
+        if (StringUtils.isNotBlank(filePath)) {
+            return resolveByPath(filePath);
+        }
+        return resolveByProjectUri(projectUri);
+    }
+
+    /**
      * Resolves the single, process-global {@link TryOutManager} for {@code ctx}, (re)binding it to
      * {@code ctx}'s project when it currently points elsewhere.
      *
@@ -1529,8 +1546,14 @@ public class SynapseLanguageService implements ISynapseLanguageService {
     @Override
     public CompletableFuture<DriverMavenCoordinatesResponse> getDriverMavenCoordinates(
             DriverMavenCoordinatesRequest request){
-        // filePath is the JDBC driver's path on disk, taken from a connection parameter.
-        ProjectContext ctx = resolveByPath(request.getFilePath());
+        // filePath is the JDBC driver's path on disk, taken from a connection parameter — and it is
+        // blank whenever the driver has not been downloaded yet, which is the main reason to ask for
+        // the coordinates at all (ConnectorDownloadManager then reads them from the connector's
+        // descriptor.yml instead). Routing on it alone therefore resolved the first-use case, where a
+        // connection carries neither a driverPath nor stored coordinates, to no project: the handler
+        // returned null and the caller's whole connection-validation step failed, leaving the DB
+        // operation form's table and query fields empty. Fall back to the project the caller named.
+        ProjectContext ctx = resolveByPathOrProjectUri(request.getFilePath(), request.getProjectUri());
         return CompletableFuture.supplyAsync(() -> ctx != null ? ConnectorDownloadManager.getDriverMavenCoordinates(
                 request.getFilePath(),
                 request.getConnectorName(),
