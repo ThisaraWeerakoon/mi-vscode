@@ -4875,7 +4875,8 @@ ${endpointAttributes}
             const langClient = await MILanguageClient.getInstance(this.projectUri);
             const res = await langClient.getInboundEPUischema({
                 connectorName: params.connectorName,
-                documentPath: params.documentPath
+                documentPath: params.documentPath,
+                projectUri: this.projectUri
             });
             resolve(res);
         });

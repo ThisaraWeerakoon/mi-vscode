@@ -1771,6 +1771,7 @@ export interface SaveInboundEPUischemaRequest {
 export interface GetInboundEPUischemaRequest {
     documentPath?: string;
     connectorName?: string;
+    projectUri?: string;
 }
 
 export interface GetInboundEPUischemaResponse {

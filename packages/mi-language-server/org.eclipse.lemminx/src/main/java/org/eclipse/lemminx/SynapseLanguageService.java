@@ -1039,8 +1039,12 @@ public class SynapseLanguageService implements ISynapseLanguageService {
     @Override
     public CompletableFuture<InboundConnectorResponse> getInboundConnectorSchema(InboundConnectorParam param) {
 
-        // documentPath is a filesystem path — the handler below does new File(param.documentPath).
-        ProjectContext ctx = resolveByPath(param.documentPath);
+        // documentPath is a filesystem path — the handler below does new File(param.documentPath) —
+        // but it is only sent when an *existing* inbound endpoint is being edited. Creating a new
+        // event integration sends connectorId alone, so routing on documentPath alone resolved every
+        // "pick a connector" click to no project: the handler returned null and the form silently
+        // stayed on the connector list. Fall back to the project the caller named.
+        ProjectContext ctx = resolveByPathOrProjectUri(param.documentPath, param.projectUri);
         return CompletableFuture.supplyAsync(() -> {
             if (ctx == null) {
                 return null;

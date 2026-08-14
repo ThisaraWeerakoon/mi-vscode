@@ -345,7 +345,7 @@ export class ExtendedLanguageClient extends LanguageClient {
     }
 
     async getInboundEPUischema(req: GetInboundEPUischemaRequest): Promise<GetInboundEPUischemaResponse> {
-        return this.sendRequest("synapse/getInboundConnectorSchema", { documentPath: req.documentPath, connectorId: req.connectorName });
+        return this.sendRequest("synapse/getInboundConnectorSchema", { documentPath: req.documentPath, connectorId: req.connectorName, projectUri: req.projectUri });
     }
 
     async validateBreakpoints(req: ValidateBreakpointsRequest): Promise<ValidateBreakpointsResponse> {
