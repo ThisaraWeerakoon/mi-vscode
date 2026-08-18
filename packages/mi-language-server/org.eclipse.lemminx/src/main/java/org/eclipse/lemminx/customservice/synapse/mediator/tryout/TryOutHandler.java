@@ -79,10 +79,6 @@ public class TryOutHandler {
             "synapse-configs", "default", "sequences", "fault.xml");
     private static final String MI_HOST = TryOutConstants.LOCALHOST;
     private static final int BREAKPOINT_HIT_TIMEOUT = 10000; // Timeout to wait for the breakpoint hit
-    // How long a try-out marker in the history lock file is treated as "a try-out is running right now".
-    private static final long TRYOUT_IN_FLIGHT_EXPIRY_SECONDS = 30;
-    // How long to wait for another project's MI server to stop before giving up on taking over the port.
-    private static final long SERVER_SHUTDOWN_TIMEOUT = 30000;
     private final Object lock;
     private final String projectUri;
     private final MIServer server;
@@ -245,14 +241,13 @@ public class TryOutHandler {
                 return createFaultTryOutInfo();
             }
             currentTryoutID = null;
-            return getMediatorTryoutInfo(true, breakpointEventProcessor.isDone());
+            MediatorTryoutInfo response = getMediatorTryoutInfo(true, breakpointEventProcessor.isDone());
+            TryOutUtils.updateTimestamp(projectUri, true);
+            return response;
         } catch (NoBreakpointHitException e) {
             LOGGER.log(Level.SEVERE, "Error while getting output info");
             return new MediatorTryoutInfo(TryOutConstants.TRYOUT_FAILURE_MESSAGE);
         } finally {
-            // The session ends here on every path — including the no-step-over shortcut and a missed
-            // breakpoint — so the in-flight marker written by startTryOut() must be cleared on all of them.
-            TryOutUtils.updateTimestamp(projectUri, true);
             resumeTryOutAndDiscard();
         }
     }
@@ -680,75 +675,36 @@ public class TryOutHandler {
         return server.isStarted();
     }
 
-    /**
-     * Hands the single, shared MI server over to this project when it currently belongs to another one.
-     *
-     * <p>Both decisions here are scoped to a server owned by a <em>different</em> project. A server this
-     * project already owns is never touched: the in-flight marker its own previous try-out left behind
-     * must not be read as "busy", because marking a live server as not started is unrecoverable —
-     * {@link MIServer#startServer()} is a no-op while the port is in use, so {@code isStarted} could
-     * never return to {@code true} and every later try-out would fail with
-     * {@link TryOutConstants#SERVER_ALREADY_IN_USE_ERROR} until the process was killed by hand.
-     */
     private void handleServerRestart(MediatorTryoutRequest request) {
 
         if (!(isNewTryOut(request) || isCompleteTryOut(request))) {
             return;
         }
         String projectHash = TryOutUtils.getProjectPathHash();
-        if (StringUtils.isBlank(projectHash) || projectHash.equals(Utils.getHash(projectUri))) {
-            // No server recorded, or the recorded one is this project's own: there is nothing to take over.
-            return;
-        }
-        if (isTryOutInFlight()) {
-            // Another project is mid-try-out on the shared server. Refuse rather than killing it; because
-            // this handler never started that server, handle() reports SERVER_ALREADY_IN_USE_ERROR.
+        String existingTimestamp = TryOutUtils.getTimestamp();
+        if (StringUtils.isBlank(existingTimestamp) ||
+                (System.currentTimeMillis()/1000 - Long.parseLong(existingTimestamp) > 30)) {
+            if (StringUtils.isNotBlank(projectHash) && !Utils.getHash(projectUri).equals(projectHash)) {
+                try {
+                    if (commandClient != null && eventClient != null) {
+                        commandClient.close();
+                        eventClient.close();
+                    }
+                    if (TryOutUtils.getProcessId(DEFAULT_SERVER_PORT) != -1) {
+                        ManagementAPIClient managementAPIClient = new ManagementAPIClient();
+                        managementAPIClient.shutdown();
+                    }
+                    while (server.isServerRunning()) {
+                        Thread.sleep(2000);
+                    }
+                    reset();
+                    server.setStarted(false);
+                } catch (Exception e) {
+                    LOGGER.log(Level.SEVERE, "Error occurred while trying to restart the MI server. ", e);
+                }
+            }
+        } else {
             server.setStarted(false);
-            return;
-        }
-        try {
-            if (commandClient != null && eventClient != null) {
-                commandClient.close();
-                eventClient.close();
-            }
-            if (TryOutUtils.getProcessId(DEFAULT_SERVER_PORT) != -1) {
-                ManagementAPIClient managementAPIClient = new ManagementAPIClient();
-                managementAPIClient.shutdown();
-            }
-            long deadline = System.currentTimeMillis() + SERVER_SHUTDOWN_TIMEOUT;
-            while (server.isServerRunning() && System.currentTimeMillis() < deadline) {
-                Thread.sleep(2000);
-            }
-            if (server.isServerRunning()) {
-                // Bail out instead of blocking this synchronized handler forever. The port is still taken,
-                // so handle() reports SERVER_ALREADY_IN_USE_ERROR and asks the user to stop it.
-                LOGGER.log(Level.WARNING, "The MI server of another project did not stop within the timeout.");
-                return;
-            }
-            reset();
-            server.setStarted(false);
-        } catch (Exception e) {
-            LOGGER.log(Level.SEVERE, "Error occurred while trying to restart the MI server. ", e);
-        }
-    }
-
-    /**
-     * Whether the try-out history lock file carries a marker young enough to mean a try-out is running
-     * right now. An absent or unparsable marker counts as expired: a corrupt lock file must not block
-     * try-outs indefinitely.
-     */
-    private boolean isTryOutInFlight() {
-
-        String timestamp = TryOutUtils.getTimestamp();
-        if (StringUtils.isBlank(timestamp)) {
-            return Boolean.FALSE;
-        }
-        try {
-            long startedAt = Long.parseLong(timestamp.trim());
-            return System.currentTimeMillis() / 1000 - startedAt <= TRYOUT_IN_FLIGHT_EXPIRY_SECONDS;
-        } catch (NumberFormatException e) {
-            LOGGER.log(Level.WARNING, String.format("Ignoring malformed try-out timestamp: %s", timestamp));
-            return Boolean.FALSE;
         }
     }
 }
