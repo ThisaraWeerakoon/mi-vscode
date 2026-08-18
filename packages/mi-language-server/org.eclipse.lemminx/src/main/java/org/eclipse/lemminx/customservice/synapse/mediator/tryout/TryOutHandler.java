@@ -663,13 +663,7 @@ public class TryOutHandler {
                 commandClient.close();
                 eventClient.close();
             }
-            boolean wasStarted = server.isStarted();
-            boolean stopped = server.shutDown();
-            // A caller that shuts this handler down to start a server for another project needs the port
-            // to be free by the time this returns, not merely the process to have been signalled. Only
-            // wait when this handler owned the server: otherwise a port held by an unrelated server would
-            // turn every shutdown into a full timeout.
-            return wasStarted && stopped ? server.awaitServerStop(SERVER_SHUTDOWN_TIMEOUT) : stopped;
+            return server.shutDown();
         } catch (IOException e) {
             LOGGER.log(Level.SEVERE, "Error while closing the clients", e);
         }
@@ -677,18 +671,24 @@ public class TryOutHandler {
     }
 
     /**
+     * Whether this handler's MI server process is currently running — the signal used to decide
+     * whether it's safe to tear this handler down and rebind the owning {@code TryOutManager} to a
+     * different project.
+     */
+    public boolean isActive() {
+
+        return server.isStarted();
+    }
+
+    /**
      * Hands the single, shared MI server over to this project when it currently belongs to another one.
      *
-     * <p>A server this project already owns is never touched: the in-flight marker its own previous
-     * try-out left behind must not be read as "busy", because marking a live server as not started is
-     * unrecoverable — {@link MIServer#startServer()} is a no-op while the port is in use, so
-     * {@code isStarted} could never return to {@code true} and every later try-out would fail with
+     * <p>Both decisions here are scoped to a server owned by a <em>different</em> project. A server this
+     * project already owns is never touched: the in-flight marker its own previous try-out left behind
+     * must not be read as "busy", because marking a live server as not started is unrecoverable —
+     * {@link MIServer#startServer()} is a no-op while the port is in use, so {@code isStarted} could
+     * never return to {@code true} and every later try-out would fail with
      * {@link TryOutConstants#SERVER_ALREADY_IN_USE_ERROR} until the process was killed by hand.
-     *
-     * <p>A server owned by a different project is always taken over, including while that project's
-     * try-out is still in flight. Refusing instead left the user's only way forward outside the panel
-     * they were working in — and, across two windows sharing the machine, in another VS Code instance
-     * entirely. The interrupted project simply starts its server again on its next try-out.
      */
     private void handleServerRestart(MediatorTryoutRequest request) {
 
@@ -701,8 +701,10 @@ public class TryOutHandler {
             return;
         }
         if (isTryOutInFlight()) {
-            LOGGER.log(Level.INFO,
-                    "Taking the MI server over from another project whose try-out is still in flight.");
+            // Another project is mid-try-out on the shared server. Refuse rather than killing it; because
+            // this handler never started that server, handle() reports SERVER_ALREADY_IN_USE_ERROR.
+            server.setStarted(false);
+            return;
         }
         try {
             if (commandClient != null && eventClient != null) {
