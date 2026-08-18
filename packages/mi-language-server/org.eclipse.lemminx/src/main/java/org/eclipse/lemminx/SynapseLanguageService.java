@@ -74,7 +74,6 @@ import org.eclipse.lemminx.customservice.synapse.dependency.tree.pojo.Dependency
 import org.eclipse.lemminx.customservice.synapse.mediator.schema.generate.ServerLessTryoutHandler;
 import org.eclipse.lemminx.customservice.synapse.mediator.tryout.TryOutManager;
 import org.eclipse.lemminx.customservice.synapse.mediator.tryout.pojo.MediatorTryoutRequest;
-import org.eclipse.lemminx.customservice.synapse.mediator.tryout.pojo.ShutdownTryoutRequest;
 import org.eclipse.lemminx.customservice.synapse.mediatorService.AIConnectorHandler;
 import org.eclipse.lemminx.customservice.synapse.mediatorService.pojo.MediatorRequest;
 import org.eclipse.lemminx.customservice.synapse.mediatorService.pojo.SynapseConfigRequest;
@@ -310,7 +309,7 @@ public class SynapseLanguageService implements ISynapseLanguageService {
      * <p>This no longer captures a default project, and no longer pre-binds anything to one:
      * <ul>
      *   <li>the shared {@link TryOutManager} is created lazily, per request, by
-     *       {@link #bindTryOutManager(ProjectContext, String)}, which binds it to whichever project
+     *       {@link #bindTryOutManager(ProjectContext)}, which binds it to whichever project
      *       actually asked;</li>
      *   <li>each project's DB-driver classloader is seeded from its own {@code deployment/libs} by
      *       {@link ProjectContext#initProject}, so every registered project gets one — not just the
@@ -483,10 +482,6 @@ public class SynapseLanguageService implements ISynapseLanguageService {
      * project execution plan's Phase 4), so a rebind is refused — returning {@code null} — while a
      * try-out for a *different* project is actively running, rather than silently killing it.
      *
-     * @param requestServerPath the initiating project's configured MI server path (may be blank/null);
-     *                           used instead of the process-global {@link #miServerPath} when this call
-     *                           is what creates a new {@link TryOutManager}, so the single shared server
-     *                           launches the runtime the *initiating* project expects
      * <p>There is no manager to hand back when {@code ctx} is {@code null}: without a project there is
      * no runtime version, connector set or {@code deployment/libs} to launch against. Callers surface
      * that via {@link #tryOutUnavailableMessage(ProjectContext)}.
@@ -495,7 +490,7 @@ public class SynapseLanguageService implements ISynapseLanguageService {
      *         is {@code null}, or if a different project's try-out is currently active — in both cases
      *         the caller should surface {@link #tryOutUnavailableMessage(ProjectContext)}
      */
-    private TryOutManager bindTryOutManager(ProjectContext ctx, String requestServerPath) {
+    private TryOutManager bindTryOutManager(ProjectContext ctx) {
         if (ctx == null) {
             return null;
         }
@@ -508,8 +503,7 @@ public class SynapseLanguageService implements ISynapseLanguageService {
         if (tryOutManager != null) {
             tryOutManager.shutdown();
         }
-        String effectiveServerPath = StringUtils.isNotBlank(requestServerPath) ? requestServerPath : miServerPath;
-        tryOutManager = new TryOutManager(ctx.getProjectUri(), effectiveServerPath, ctx.getProjectServerVersion(),
+        tryOutManager = new TryOutManager(ctx.getProjectUri(), miServerPath, ctx.getProjectServerVersion(),
                 ctx.getConnectorHolder(), languageClient);
         return tryOutManager;
     }
@@ -1211,7 +1205,7 @@ public class SynapseLanguageService implements ISynapseLanguageService {
 
         ProjectContext ctx = resolveByPath(request.getFile());
         return CompletableFuture.supplyAsync(() -> {
-            TryOutManager manager = bindTryOutManager(ctx, request.getServerPath());
+            TryOutManager manager = bindTryOutManager(ctx);
             if (manager == null) {
                 return new MediatorTryoutInfo(tryOutUnavailableMessage(ctx));
             }
@@ -1220,29 +1214,9 @@ public class SynapseLanguageService implements ISynapseLanguageService {
     }
 
     @Override
-    public CompletableFuture<Boolean> shutDownTryoutServer(ShutdownTryoutRequest request) {
+    public CompletableFuture<Boolean> shutDownTryoutServer() {
 
-        // Only tear down the shared TryOutManager if it's still bound to the requesting project (or the
-        // request carries no project, for older clients) - otherwise an unrelated project's shutdown call
-        // (e.g. before its own build/run) would kill another project's active try-out session.
-        //
-        // The ownership check compares project roots through WorkspaceManager.isSameProjectPath rather
-        // than String.equals: the client sends WorkspaceFolder.uri.fsPath while the manager holds the
-        // context's own projectUri, and a difference in format or drive-letter case between two spellings
-        // of the same folder would otherwise read as "a different project" — declining the shutdown and
-        // leaking the MI server process. It deliberately does not require the project to still be
-        // registered, so a folder removed from the workspace can still shut its own try-out down.
-        return CompletableFuture.supplyAsync(() -> {
-            if (tryOutManager == null) {
-                return true;
-            }
-            String requestProjectUri = request != null ? request.getProjectUri() : null;
-            if (StringUtils.isNotBlank(requestProjectUri)
-                    && !WorkspaceManager.isSameProjectPath(requestProjectUri, tryOutManager.getProjectUri())) {
-                return true;
-            }
-            return tryOutManager.shutdown();
-        });
+        return CompletableFuture.supplyAsync(() -> tryOutManager != null && tryOutManager.shutdown());
     }
 
     @Override
@@ -1262,7 +1236,7 @@ public class SynapseLanguageService implements ISynapseLanguageService {
 
         ProjectContext ctx = resolveByProjectUri(request.getProjectUri());
         return CompletableFuture.supplyAsync(() -> {
-            TryOutManager manager = bindTryOutManager(ctx, null);
+            TryOutManager manager = bindTryOutManager(ctx);
             if (manager == null) {
                 return new TestConnectionResponse(tryOutUnavailableMessage(ctx));
             }
