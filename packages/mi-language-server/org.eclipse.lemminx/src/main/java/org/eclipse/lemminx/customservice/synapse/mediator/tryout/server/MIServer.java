@@ -556,6 +556,34 @@ public class MIServer {
         LOGGER.log(Level.WARNING, "Server did not start within the timeout period");
     }
 
+    /**
+     * Waits, for at most {@code timeoutMillis}, until nothing is listening on the MI port any more.
+     *
+     * <p>{@link #shutDown()} only joins on the process it launched; on Windows that is the
+     * {@code cmd /c micro-integrator.bat} wrapper, whose Java child is destroyed asynchronously and can
+     * still hold the port for a moment after the wrapper has exited. A caller that intends to start a
+     * replacement server needs the port to be observably free first, since {@link #startServer()} is a
+     * no-op while {@link #isServerRunning()} is {@code true}.
+     *
+     * @return whether the port was free before the timeout elapsed
+     */
+    public boolean awaitServerStop(long timeoutMillis) {
+
+        long deadline = System.currentTimeMillis() + timeoutMillis;
+        while (isServerRunning()) {
+            if (System.currentTimeMillis() >= deadline) {
+                return Boolean.FALSE;
+            }
+            try {
+                Thread.sleep(500);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return !isServerRunning();
+            }
+        }
+        return Boolean.TRUE;
+    }
+
     public boolean isServerRunning() {
 
         try (Socket socket = new Socket(TryOutConstants.LOCALHOST, TryOutConstants.DEFAULT_SERVER_INBOUND_PORT)) {

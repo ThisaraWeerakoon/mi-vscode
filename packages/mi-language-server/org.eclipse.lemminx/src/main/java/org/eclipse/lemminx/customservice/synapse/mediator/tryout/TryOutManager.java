@@ -49,15 +49,6 @@ public class TryOutManager {
         return projectRoot;
     }
 
-    /**
-     * Whether this manager's MI server is currently running a try-out session — i.e. whether it's
-     * unsafe to tear it down and rebind to a different project without disrupting an in-flight one.
-     */
-    public boolean isActive() {
-
-        return tryOutHandler.isActive();
-    }
-
     public final MediatorTryoutInfo tryout(MediatorTryoutRequest request) {
 
         if (request.isIsolatedTryout()) {

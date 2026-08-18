@@ -275,6 +275,10 @@ public class SynapseLanguageService implements ISynapseLanguageService {
     private String extensionPath;
     private String miServerPath;
     private TryOutManager tryOutManager;
+    // Serializes the stop-the-old-server/start-a-new-one handover in bindTryOutManager. Try-out
+    // requests are served on the common pool, so two projects can ask to bind at once; without this,
+    // both would pass the "not mine" check and launch a server for the single shared MI port.
+    private final Object tryOutBindLock = new Object();
     private DynamicFieldsHandler dynamicFieldsHandler;
     private final URIResolverExtensionManager uriResolverExtensionManager;
 
@@ -480,8 +484,11 @@ public class SynapseLanguageService implements ISynapseLanguageService {
      * {@code ctx}'s project when it currently points elsewhere.
      *
      * <p>The underlying MI server process is a single-port, single-instance resource (see the multi
-     * project execution plan's Phase 4), so a rebind is refused — returning {@code null} — while a
-     * try-out for a *different* project is actively running, rather than silently killing it.
+     * project execution plan's Phase 4), so binding a second project means taking that resource over:
+     * the currently bound manager is shut down first — stopping its MI server even when a try-out is
+     * running on it — and the requesting project gets a freshly launched one. Trying out a mediator in
+     * a second project therefore always proceeds; it never fails with "another project is already
+     * active", which left the user with no way forward but to hunt down the other project's panel.
      *
      * @param requestServerPath the initiating project's configured MI server path (may be blank/null);
      *                           used instead of the process-global {@link #miServerPath} when this call
@@ -489,44 +496,41 @@ public class SynapseLanguageService implements ISynapseLanguageService {
      *                           launches the runtime the *initiating* project expects
      * <p>There is no manager to hand back when {@code ctx} is {@code null}: without a project there is
      * no runtime version, connector set or {@code deployment/libs} to launch against. Callers surface
-     * that via {@link #tryOutUnavailableMessage(ProjectContext)}.
+     * that via {@link #tryOutUnavailableMessage()}.
      *
      * @return the {@link TryOutManager} bound to {@code ctx}'s project, or {@code null} if {@code ctx}
-     *         is {@code null}, or if a different project's try-out is currently active — in both cases
-     *         the caller should surface {@link #tryOutUnavailableMessage(ProjectContext)}
+     *         is {@code null} — the caller should then surface {@link #tryOutUnavailableMessage()}
      */
     private TryOutManager bindTryOutManager(ProjectContext ctx, String requestServerPath) {
         if (ctx == null) {
             return null;
         }
-        if (tryOutManager != null && ctx.getProjectUri().equals(tryOutManager.getProjectUri())) {
+        synchronized (tryOutBindLock) {
+            if (tryOutManager != null && ctx.getProjectUri().equals(tryOutManager.getProjectUri())) {
+                return tryOutManager;
+            }
+            if (tryOutManager != null) {
+                // Take the shared server over from the project that currently holds it. shutdown() blocks
+                // until the MI port is actually free, so the manager created below can bind it right away.
+                log.log(Level.INFO, String.format(
+                        "Stopping the try-out server of project '%s' to start one for project '%s'.",
+                        tryOutManager.getProjectUri(), ctx.getProjectUri()));
+                tryOutManager.shutdown();
+            }
+            String effectiveServerPath = StringUtils.isNotBlank(requestServerPath) ? requestServerPath : miServerPath;
+            tryOutManager = new TryOutManager(ctx.getProjectUri(), effectiveServerPath, ctx.getProjectServerVersion(),
+                    ctx.getConnectorHolder(), languageClient);
             return tryOutManager;
         }
-        if (tryOutManager != null && tryOutManager.isActive()) {
-            return null;
-        }
-        if (tryOutManager != null) {
-            tryOutManager.shutdown();
-        }
-        String effectiveServerPath = StringUtils.isNotBlank(requestServerPath) ? requestServerPath : miServerPath;
-        tryOutManager = new TryOutManager(ctx.getProjectUri(), effectiveServerPath, ctx.getProjectServerVersion(),
-                ctx.getConnectorHolder(), languageClient);
-        return tryOutManager;
     }
 
     /**
-     * Explains why {@link #bindTryOutManager} declined, without dereferencing a {@link TryOutManager}
-     * that may not exist. The two causes need different wording, and neither may assume one is running.
+     * Explains why {@link #bindTryOutManager} declined. Its only remaining cause is an unresolvable
+     * project — another project holding the shared server is taken over rather than refused.
      */
-    private String tryOutUnavailableMessage(ProjectContext ctx) {
-        if (ctx == null) {
-            return "This request does not identify an open MI project, so no try-out server could be "
-                    + "started. Reopen the file from its project folder and try again.";
-        }
-        TryOutManager active = tryOutManager;
-        return String.format("A try-out for project '%s' is already active. Stop it before starting a "
-                + "try-out for a different project.",
-                active != null ? active.getProjectUri() : "another project");
+    private String tryOutUnavailableMessage() {
+        return "This request does not identify an open MI project, so no try-out server could be "
+                + "started. Reopen the file from its project folder and try again.";
     }
 
     @Override
@@ -1213,7 +1217,7 @@ public class SynapseLanguageService implements ISynapseLanguageService {
         return CompletableFuture.supplyAsync(() -> {
             TryOutManager manager = bindTryOutManager(ctx, request.getServerPath());
             if (manager == null) {
-                return new MediatorTryoutInfo(tryOutUnavailableMessage(ctx));
+                return new MediatorTryoutInfo(tryOutUnavailableMessage());
             }
             return manager.tryout(request);
         });
@@ -1233,15 +1237,19 @@ public class SynapseLanguageService implements ISynapseLanguageService {
         // leaking the MI server process. It deliberately does not require the project to still be
         // registered, so a folder removed from the workspace can still shut its own try-out down.
         return CompletableFuture.supplyAsync(() -> {
-            if (tryOutManager == null) {
-                return true;
+            // Same lock as bindTryOutManager: without it this can shut down a manager another project
+            // has just bound, or read a half-published one.
+            synchronized (tryOutBindLock) {
+                if (tryOutManager == null) {
+                    return true;
+                }
+                String requestProjectUri = request != null ? request.getProjectUri() : null;
+                if (StringUtils.isNotBlank(requestProjectUri)
+                        && !WorkspaceManager.isSameProjectPath(requestProjectUri, tryOutManager.getProjectUri())) {
+                    return true;
+                }
+                return tryOutManager.shutdown();
             }
-            String requestProjectUri = request != null ? request.getProjectUri() : null;
-            if (StringUtils.isNotBlank(requestProjectUri)
-                    && !WorkspaceManager.isSameProjectPath(requestProjectUri, tryOutManager.getProjectUri())) {
-                return true;
-            }
-            return tryOutManager.shutdown();
         });
     }
 
@@ -1264,7 +1272,7 @@ public class SynapseLanguageService implements ISynapseLanguageService {
         return CompletableFuture.supplyAsync(() -> {
             TryOutManager manager = bindTryOutManager(ctx, null);
             if (manager == null) {
-                return new TestConnectionResponse(tryOutUnavailableMessage(ctx));
+                return new TestConnectionResponse(tryOutUnavailableMessage());
             }
             return manager.testConnectorConnection(request);
         });
