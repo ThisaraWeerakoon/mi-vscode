@@ -138,6 +138,9 @@ public class TryOutHandler {
             return new MediatorTryoutInfo(TryOutConstants.TRYOUT_NOT_ACTIVATED_ERROR);
         }
         if (isCompleteTryOut(request)) {
+            if (currentInvocationInfo == null) {
+                return handleLostSession(request);
+            }
             return handleIsolatedTryOut(projectUri, request, true, new Properties());
         } else if (isNewTryOut(request)) {
             boolean useSameCAPP = request.getTryoutId() != null;
@@ -222,6 +225,34 @@ public class TryOutHandler {
             resumeTryOutAndDiscard();
             return new MediatorTryoutInfo(e.getMessage());
         }
+    }
+
+    /**
+     * Serves a "Run" click whose try-out session this handler no longer holds.
+     *
+     * <p>A Try-Out panel keeps the {@code tryoutId} it was loaded with for as long as it stays open,
+     * but the session behind that id does not survive the single shared MI server changing hands:
+     * {@code bindTryOutManager} builds a brand new {@link TryOutHandler} for whichever project asks
+     * next, and another one when the server comes back. The returning click then arrives carrying both
+     * a {@code tryoutId} and a {@code mediatorInfo} at a handler that has neither a deployed CAPP nor a
+     * {@code currentInvocationInfo}, which is exactly the shape {@link #isCompleteTryOut} matches — so
+     * it went to {@link #handleIsolatedTryOut} with {@code useSameCAPP}, the one path that skips
+     * deployment and dereferences {@code currentInvocationInfo} straight away.
+     *
+     * <p>Rebuild the state the panel already believes in instead: deploy and run up to the mediator the
+     * way the initial load did, then resume through it with the properties the user edited, so the
+     * click returns the same input/output pair it would have on a session that was never lost.
+     */
+    private MediatorTryoutInfo handleLostSession(MediatorTryoutRequest request) {
+
+        LOGGER.info("Rebuilding a try-out session that was lost when the shared MI server changed hands");
+        MediatorTryoutInfo rebuilt = startTryOut(request, false);
+        if (rebuilt.getError() != null || currentInvocationInfo == null || currentInputInfo == null) {
+            // The replay failed (deployment error, breakpoint never hit, fault sequence): report that
+            // rather than resuming a session that was never re-established.
+            return rebuilt;
+        }
+        return resumeTryOut(request);
     }
 
     /**

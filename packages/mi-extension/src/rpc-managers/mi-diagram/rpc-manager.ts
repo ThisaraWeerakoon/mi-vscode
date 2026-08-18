@@ -606,16 +606,22 @@ export class MiDiagramRpcManager implements MiDiagramAPI {
         return config.get<string>(SELECTED_SERVER_PATH) || "";
     }
 
+    // Errors are turned into an error response rather than left to reject. A try-out request that
+    // rejects here would never reach the panel: the webview awaits this call to clear its "Running..."
+    // state, so an unanswered request leaves the Run button spinning with no way back short of
+    // reopening the panel.
     async tryOutMediator(params: MediatorTryOutRequest): Promise<MediatorTryOutResponse> {
-        return new Promise(async (resolve) => {
+        try {
             const langClient = await MILanguageClient.getInstance(this.projectUri);
-            const res = await langClient.tryOutMediator({
+            return await langClient.tryOutMediator({
                 ...params,
                 projectUri: this.projectUri,
                 serverPath: this.getConfiguredServerPath()
             });
-            resolve(res);
-        });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return { error: message } as MediatorTryOutResponse;
+        }
     }
 
     async shutDownTryoutServer(): Promise<boolean> {
