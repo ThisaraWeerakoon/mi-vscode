@@ -452,15 +452,22 @@ export class ExtendedLanguageClient extends LanguageClient {
         return this.sendRequest('synapse/removeMavenDeployPlugin', { projectUri });
     }
 
-    async getSequencePath(sequenceName: string): Promise<string | undefined> {
-        return new Promise(async (resolve) => {
-            const resp = await this.getProjectStructure(this.projectUri);
-            const sequences = resp.directoryMap.src.main.wso2mi.artifacts.sequences;
-            const match = sequences.find((sequence: any) => sequence.name === sequenceName);
-            resolve(match ? match.path : undefined);
-
-            resolve(undefined);
-        });
+    /**
+     * Resolves a sequence name to its file path within a specific project.
+     *
+     * `projectUri` must be the project that owns the artifact referring to the sequence.
+     * One shared client serves every project, so `this.projectUri` is only the project that
+     * happened to spawn the JVM - resolving against it reads another project's sequences.
+     * It remains the fallback only for the one caller not yet migrated (see stateMachine.ts
+     * Task enrichment); drop it, and the field, once that caller passes its project.
+     */
+    async getSequencePath(sequenceName: string, projectUri?: string): Promise<string | undefined> {
+        const resp = await this.getProjectStructure(projectUri ?? this.projectUri);
+        const sequences = resp?.directoryMap?.src?.main?.wso2mi?.artifacts?.sequences;
+        if (!Array.isArray(sequences)) {
+            return undefined;
+        }
+        return sequences.find((sequence: any) => sequence.name === sequenceName)?.path;
     }
 
     async tryOutMediator(req: MediatorTryOutRequest): Promise<MediatorTryOutResponse> {

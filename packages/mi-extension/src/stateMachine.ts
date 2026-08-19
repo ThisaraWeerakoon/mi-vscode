@@ -584,7 +584,9 @@ const stateMachine = createMachine<MachineContext>({
                                     const inboundEndpoint: InboundEndpoint = node.inboundEndpoint as InboundEndpoint;
                                     viewLocation.view = MACHINE_VIEW.InboundEPView;
                                     const epSequenceName = inboundEndpoint.sequence;
-                                    const sequenceURI = await langClient.getSequencePath(epSequenceName ? epSequenceName : "");
+                                    // Resolve against the project that owns this inbound endpoint - the
+                                    // shared language client is bound to whichever project spawned the JVM.
+                                    const sequenceURI = await langClient.getSequencePath(epSequenceName ? epSequenceName : "", context.projectUri);
                                     if (sequenceURI) {
                                         const sequence = await langClient.getSyntaxTree({ documentIdentifier: { uri: sequenceURI } });
                                         inboundEndpoint.sequenceModel = sequence.syntaxTree.sequence;
