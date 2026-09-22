@@ -190,7 +190,7 @@ export function activateVisualizer(context: vscode.ExtensionContext, firstProjec
                 // active webview
                 const webview = [...webviews.values()].find(webview => webview.getWebview()?.active) || [...webviews.values()][0];
                 const projectUri = webview ? webview.getProjectUri() : firstProject;
-                openView(EVENT_TYPE.OPEN_VIEW, { view: MACHINE_VIEW.ProjectCreationForm, projectUri });
+                openView(EVENT_TYPE.OPEN_VIEW, { view: MACHINE_VIEW.Welcome, projectUri });
                 log('Create New Project');
             }
         }),
@@ -436,7 +436,7 @@ export function activateVisualizer(context: vscode.ExtensionContext, firstProjec
                     const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left);
                     statusBarItem.text = '$(sync) Updating dependencies...';
                     statusBarItem.show();
-                    await langClient?.updateConnectorDependencies();
+                    await langClient?.updateConnectorDependencies(projectUri!);
                     await loadCAppResources(projectUri!, langClient);
                     statusBarItem.hide();
                 }
@@ -690,7 +690,7 @@ async function handleConflictingCAppArtifacts(
 
     await window.showWarningMessage(displayMessage, { modal: true });
 
-    const projectDetails = await langClient.getProjectDetails();
+    const projectDetails = await langClient.getProjectDetails(projectUri);
     const existingDependencies = projectDetails.dependencies || {};
     const allExistingDeps = [
         ...(existingDependencies.connectorDependencies || []),
@@ -719,7 +719,7 @@ export async function loadCAppResources(
 ): Promise<void> {
     try {
         await extractCAppDependenciesAsProjects(projectUri);
-        const response = await langClient.loadDependentCAppResources();
+        const response = await langClient.loadDependentCAppResources(projectUri);
         if (response.status === 'CONFLICT') {
             await handleConflictingCAppArtifacts(projectUri, langClient, response.conflictingDependencies ?? []);
         } else if (response.status === 'ERROR') {

@@ -15,6 +15,7 @@
 package org.eclipse.lemminx.extensions.synapse;
 
 import org.eclipse.lemminx.SynapseLanguageService;
+import org.eclipse.lemminx.customservice.synapse.ProjectContext;
 import org.eclipse.lemminx.customservice.synapse.utils.Constant;
 import org.eclipse.lemminx.customservice.synapse.utils.Utils;
 import org.eclipse.lemminx.customservice.synapse.resourceFinder.NewProjectResourceFinder;
@@ -1607,10 +1608,13 @@ public class SynapseDiagnosticsParticipant implements IDiagnosticsParticipant {
             Map<String, ResourceResponse> allResources = resourceFinder.findAllResources(projectPath);
             collectResourceNames(allResources, artifactNames, templatePaths, nameToFiles);
 
-            // Dependent-project artifacts were loaded once by SynapseLanguageService at init;
-            // read through the published finder instead of re-loading on every cache miss.
-            collectResourceNames(SynapseLanguageService.getLoadedDependentResources(),
-                    artifactNames, templatePaths, nameToFiles);
+            // TODO(unrouted-request): resolve dependent-project artifacts from the document's own ProjectContext by URI so each project sees only its own dependencies, contributing none for an unrouted document instead of resolving incorrectly against the default project's .car dependencies as before.
+            ProjectContext projectContext =
+                    SynapseLanguageService.resolveProjectContext(document.getDocumentURI());
+            Map<String, ResourceResponse> dependentResources = projectContext != null
+                    ? projectContext.getResourceFinder().getDependentResourcesMap()
+                    : java.util.Collections.emptyMap();
+            collectResourceNames(dependentResources, artifactNames, templatePaths, nameToFiles);
         } catch (Exception e) {
             LOGGER.log(Level.WARNING, "Failed to build artifact name index for cross-reference validation", e);
             return null;

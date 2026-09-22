@@ -19,8 +19,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import org.apache.commons.lang3.StringUtils;
 import org.eclipse.lemminx.customservice.synapse.connectors.ConnectorHolder;
+import org.eclipse.lemminx.customservice.synapse.connectors.ConnectorReader;
 import org.eclipse.lemminx.customservice.synapse.connectors.entity.Connector;
 import org.eclipse.lemminx.customservice.synapse.utils.Constant;
+import org.eclipse.lemminx.customservice.synapse.utils.Utils;
 
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -46,6 +48,9 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.regex.Matcher;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 
 
 /**
@@ -186,7 +191,8 @@ public class ConnectorConfigService {
      * @param request     the override to apply
      * @throws IOException if the config file cannot be read or written
      */
-    public static void updateDependencyOverride(String projectPath, UpdateConnectorDependencyRequest request)
+    public static void updateDependencyOverride(String projectPath, UpdateConnectorDependencyRequest request,
+                                                ConnectorHolder connectorHolder)
             throws IOException {
 
         if (StringUtils.isBlank(request.connectorArtifactId)) {
@@ -203,7 +209,7 @@ public class ConnectorConfigService {
             ConnectorConfig config = readConfig(projectPath);
             ConnectorDependencyConfig connectorCfg = config.connectors.computeIfAbsent(
                     request.connectorArtifactId, k -> new ConnectorDependencyConfig());
-            populateQNameIfAbsent(connectorCfg, request.connectorArtifactId);
+            populateQNameIfAbsent(connectorCfg, request.connectorArtifactId, connectorHolder);
             if (connectorCfg.dependencies == null) {
                 connectorCfg.dependencies = new ArrayList<>();
             }
@@ -321,19 +327,20 @@ public class ConnectorConfigService {
      * @return the populated response
      */
     public static ConnectorDependencyResponse buildDependencyResponse(String projectPath,
-                                                                      String connectorArtifactId) {
+                                                                      String connectorArtifactId,
+                                                                      ConnectorHolder connectorHolder) {
 
         ConnectorConfig config = readConfig(projectPath);
         ConnectorDependencyResponse response = new ConnectorDependencyResponse();
         response.omitAllDrivers = Boolean.TRUE.equals(config.omitAllDrivers);
         response.omitAllConnectors = Boolean.TRUE.equals(config.omitAllConnectors);
         if (connectorArtifactId != null) {
-            List<Map<String, Object>> descriptorDeps = readDescriptorDependencies(connectorArtifactId);
+            List<Map<String, Object>> descriptorDeps = readDescriptorDependencies(connectorArtifactId, connectorHolder);
             Set<String> activeConnectionTypes = scanActiveConnectionTypes(projectPath);
             response.dependencies = mergeDependencies(descriptorDeps, config, connectorArtifactId,
                     activeConnectionTypes);
         } else {
-            response.allConnectors = getAllEffectiveDependencies(config, projectPath);
+            response.allConnectors = getAllEffectiveDependencies(config, projectPath, connectorHolder);
         }
         return response;
     }
@@ -347,14 +354,14 @@ public class ConnectorConfigService {
      * @return map of connectorArtifactId → effective data
      */
     private static Map<String, ConnectorEffectiveData> getAllEffectiveDependencies(ConnectorConfig config,
-                                                                                   String projectPath) {
+                                                                                   String projectPath,
+                                                                                   ConnectorHolder holder) {
 
         // Scan once here; the set is forwarded to mergeDependencies so it is not re-scanned
         // for every connector in the loop below.
         Set<String> activeConnectionTypes = scanActiveConnectionTypes(projectPath);
 
         Map<String, ConnectorEffectiveData> result = new HashMap<>();
-        ConnectorHolder holder = ConnectorHolder.getInstance();
         for (Connector connector : new ArrayList<>(holder.getConnectors())) {
             String artifactId = connectorArtifactId(connector);
             List<Map<String, Object>> descriptorDeps = readDescriptorDependenciesFromPath(
@@ -372,19 +379,96 @@ public class ConnectorConfigService {
                     : mergeDependencies(descriptorDeps, config, artifactId, activeConnectionTypes);
             result.put(artifactId, data);
         }
+
+        // Inbound-endpoint modules are excluded from ConnectorHolder, so their dependencies
+        // are located independently here.
+        for (File inboundFolder : findInboundConnectorFolders(projectPath)) {
+            Matcher artifactIdMatcher = ConnectorReader.ARTIFACT_VERSION_REGEX.matcher(inboundFolder.getName());
+            if (!artifactIdMatcher.find()) {
+                continue;
+            }
+            String artifactId = artifactIdMatcher.group(1);
+            if (result.containsKey(artifactId)) {
+                continue;
+            }
+            List<Map<String, Object>> descriptorDeps =
+                    readDescriptorDependenciesFromPath(inboundFolder.getAbsolutePath());
+            ConnectorDependencyConfig connectorCfg = config.connectors.get(artifactId);
+
+            ConnectorEffectiveData data = new ConnectorEffectiveData();
+            data.omit = Boolean.TRUE.equals(connectorCfg != null ? connectorCfg.omit : null);
+            data.omitAllDrivers = Boolean.TRUE.equals(config.omitAllDrivers)
+                    || Boolean.TRUE.equals(connectorCfg != null ? connectorCfg.omitAllDrivers : null);
+            boolean hasOverrides = connectorCfg != null && connectorCfg.dependencies != null
+                    && !connectorCfg.dependencies.isEmpty();
+            data.dependencies = (descriptorDeps.isEmpty() && !hasOverrides)
+                    ? new ArrayList<>()
+                    : mergeDependencies(descriptorDeps, config, artifactId, activeConnectionTypes);
+            result.put(artifactId, data);
+        }
+
+        // Manually imported inbound-endpoint zips are never extracted persistently, so
+        // descriptor.yml is read directly from the zip archive here instead.
+        for (String dirName : new String[]{Constant.INBOUND_ENDPOINTS, Constant.INBOUND_CONNECTORS_DIR}) {
+            File dir = Path.of(projectPath, Constant.SRC, Constant.MAIN, Constant.WSO2MI, Constant.RESOURCES,
+                    dirName).toFile();
+            File[] zips = dir.listFiles(
+                    file -> file.isFile() && file.getName().toLowerCase().endsWith(Constant.ZIP_EXTENSION));
+            if (zips == null) {
+                continue;
+            }
+            for (File zip : zips) {
+                String zipName = zip.getName().substring(0, zip.getName().length() - Constant.ZIP_EXTENSION.length());
+                Matcher artifactIdMatcher = ConnectorReader.ARTIFACT_VERSION_REGEX.matcher(zipName);
+                String artifactId = artifactIdMatcher.find() ? artifactIdMatcher.group(1) : zipName;
+                if (result.containsKey(artifactId)) {
+                    continue;
+                }
+                List<Map<String, Object>> descriptorDeps = readDescriptorDependenciesFromZip(zip);
+                ConnectorDependencyConfig connectorCfg = config.connectors.get(artifactId);
+
+                ConnectorEffectiveData data = new ConnectorEffectiveData();
+                data.omit = Boolean.TRUE.equals(connectorCfg != null ? connectorCfg.omit : null);
+                data.omitAllDrivers = Boolean.TRUE.equals(config.omitAllDrivers)
+                        || Boolean.TRUE.equals(connectorCfg != null ? connectorCfg.omitAllDrivers : null);
+                boolean hasOverrides = connectorCfg != null && connectorCfg.dependencies != null
+                        && !connectorCfg.dependencies.isEmpty();
+                data.dependencies = (descriptorDeps.isEmpty() && !hasOverrides)
+                        ? new ArrayList<>()
+                        : mergeDependencies(descriptorDeps, config, artifactId, activeConnectionTypes);
+                result.put(artifactId, data);
+            }
+        }
         return result;
     }
 
     /**
-     * Returns the effective dependency lists for every connector currently loaded in the
-     * {@link ConnectorHolder}.
+     * Lists extracted inbound-endpoint module folders (mi-inbound-*) for a project. These are
+     * extracted alongside regular connectors but excluded from {@link ConnectorHolder}, so they
+     * are found here by listing the extract folder directly instead.
      *
      * @param projectPath absolute path to the project root
-     * @return map of connectorArtifactId → list of effective dependencies
+     * @return extracted inbound-endpoint module folders, or an empty list if none are found
      */
-    private static Map<String, ConnectorEffectiveData> getAllEffectiveDependencies(String projectPath) {
+    private static List<File> findInboundConnectorFolders(String projectPath) {
 
-        return getAllEffectiveDependencies(readConfig(projectPath), projectPath);
+        String userHome = System.getProperty(Constant.USER_HOME);
+        String key = Utils.isLegacyProject(projectPath)
+                ? Utils.getHash(projectPath)
+                : new File(projectPath).getName() + "_" + Utils.getHash(projectPath);
+        File extractFolder = Path.of(userHome, Constant.WSO2_MI, Constant.CONNECTORS, key, Constant.EXTRACTED).toFile();
+
+        File[] dirs = extractFolder.listFiles(File::isDirectory);
+        if (dirs == null) {
+            return Collections.emptyList();
+        }
+        List<File> result = new ArrayList<>();
+        for (File dir : dirs) {
+            if (dir.getName().toLowerCase().startsWith(Constant.INBOUND_CONNECTOR_PREFIX)) {
+                result.add(dir);
+            }
+        }
+        return result;
     }
 
     /**
@@ -444,9 +528,10 @@ public class ConnectorConfigService {
      * Reads the {@code dependencies} list from a connector's descriptor.yml using its
      * ConnectorHolder name to locate the extracted path.
      */
-    private static List<Map<String, Object>> readDescriptorDependencies(String connectorArtifactId) {
+    private static List<Map<String, Object>> readDescriptorDependencies(String connectorArtifactId,
+                                                                        ConnectorHolder connectorHolder) {
 
-        Connector connector = new ArrayList<>(ConnectorHolder.getInstance().getConnectors()).stream()
+        Connector connector = new ArrayList<>(connectorHolder.getConnectors()).stream()
                 .filter(c -> connectorArtifactId.equals(connectorArtifactId(c))
                         || connectorArtifactId.equals(c.getName()))
                 .findFirst().orElse(null);
@@ -474,6 +559,34 @@ public class ConnectorConfigService {
             }
         } catch (IOException e) {
             LOGGER.log(Level.WARNING, "Failed to read descriptor.yml from " + extractedConnectorPath
+                    + ": " + e.getMessage());
+        }
+        return Collections.emptyList();
+    }
+
+    /**
+     * Reads descriptor.yml's dependency list directly from a zip, for imports with no extracted copy.
+     *
+     * @param zip the connector/inbound-endpoint zip file
+     * @return the dependencies list, or empty if descriptor.yml is missing/unreadable
+     */
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> readDescriptorDependenciesFromZip(File zip) {
+
+        try (ZipFile zipFile = new ZipFile(zip)) {
+            ZipEntry entry = zipFile.getEntry(Constant.DESCRIPTOR_FILE);
+            if (entry == null) {
+                return Collections.emptyList();
+            }
+            try (InputStream is = zipFile.getInputStream(entry)) {
+                Map<String, Object> yamlData = YAML_MAPPER.readValue(is, Map.class);
+                Object deps = yamlData.get(Constant.DEPENDENCIES);
+                if (deps instanceof List) {
+                    return (List<Map<String, Object>>) deps;
+                }
+            }
+        } catch (IOException e) {
+            LOGGER.log(Level.WARNING, "Failed to read descriptor.yml from " + zip.getAbsolutePath()
                     + ": " + e.getMessage());
         }
         return Collections.emptyList();
@@ -668,7 +781,8 @@ public class ConnectorConfigService {
      * @param request     the flag update request
      * @throws IOException if the config file cannot be read or written
      */
-    public static void updateConnectorFlags(String projectPath, UpdateConnectorFlagsRequest request)
+    public static void updateConnectorFlags(String projectPath, UpdateConnectorFlagsRequest request,
+                                            ConnectorHolder connectorHolder)
             throws IOException {
 
         if (StringUtils.isBlank(request.connectorArtifactId)) {
@@ -679,7 +793,7 @@ public class ConnectorConfigService {
             ConnectorConfig config = readConfig(projectPath);
             ConnectorDependencyConfig connectorCfg = config.connectors.computeIfAbsent(
                     request.connectorArtifactId, k -> new ConnectorDependencyConfig());
-            populateQNameIfAbsent(connectorCfg, request.connectorArtifactId);
+            populateQNameIfAbsent(connectorCfg, request.connectorArtifactId, connectorHolder);
 
             if (request.omit != null) {
                 connectorCfg.omit = request.omit ? Boolean.TRUE : null;
@@ -759,12 +873,12 @@ public class ConnectorConfigService {
      * @param connectorArtifactId the Maven artifact ID used to locate the connector in the holder
      */
     private static void populateQNameIfAbsent(ConnectorDependencyConfig connectorCfg,
-                                              String connectorArtifactId) {
+                                              String connectorArtifactId, ConnectorHolder connectorHolder) {
 
         if (connectorCfg.qname != null) {
             return; // already set
         }
-        Connector connector = new ArrayList<>(ConnectorHolder.getInstance().getConnectors()).stream()
+        Connector connector = new ArrayList<>(connectorHolder.getConnectors()).stream()
                 .filter(c -> connectorArtifactId.equals(connectorArtifactId(c))
                         || connectorArtifactId.equals(c.getName()))
                 .findFirst().orElse(null);

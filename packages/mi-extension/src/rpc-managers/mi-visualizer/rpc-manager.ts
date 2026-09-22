@@ -47,6 +47,9 @@ import {
     RetrieveContextResponse,
     RuntimeServicesResponse,
     SampleDownloadRequest,
+    RecentProjectsResponse,
+    RecentProjectEntry,
+    OpenRecentProjectRequest,
     AddConfigurableRequest,
     SwaggerProxyRequest,
     SwaggerProxyResponse,
@@ -100,7 +103,7 @@ import { copy } from 'fs-extra';
 
 const fs = require('fs');
 import { TextEdit } from "vscode-languageclient";
-import { downloadJavaFromMI, downloadMI, getProjectSetupDetails, getSupportedMIVersionsHigherThan, setPathsInWorkSpace, updateRuntimeVersionsInPom, getMIVersionFromPom, isConsolidatedProject } from '../../util/onboardingUtils';
+import { downloadJavaFromMI, downloadMI, getProjectSetupDetails, getSupportedMIVersionsHigherThan, setPathsInWorkSpace, updateRuntimeVersionsInPom, getMIVersionFromPom, isConsolidatedProject, isMiProject } from '../../util/onboardingUtils';
 import { extractCAppDependenciesAsProjects, loadCAppResources } from "../../visualizer/activate";
 import { findMultiModuleProjectsInWorkspaceDir, getProjectDetails as getPomProjectDetails } from "../../util/migrationUtils";
 import {
@@ -215,7 +218,7 @@ export class MiVisualizerRpcManager implements MIVisualizerAPI {
     async getProjectDetails(): Promise<ProjectDetailsResponse> {
         return new Promise(async (resolve) => {
             const langClient = await MILanguageClient.getInstance(this.projectUri);
-            const res = await langClient.getProjectDetails();
+            const res = await langClient.getProjectDetails(this.projectUri);
             resolve(res);
         });
     }
@@ -223,7 +226,7 @@ export class MiVisualizerRpcManager implements MIVisualizerAPI {
     async setDeployPlugin(params: MavenDeployPluginDetails): Promise<MavenDeployPluginDetails> {
         return new Promise(async (resolve) => {
             const langClient = await MILanguageClient.getInstance(this.projectUri);
-            const res = await langClient.setDeployPlugin(params);
+            const res = await langClient.setDeployPlugin({ ...params, projectUri: this.projectUri });
             await this.updatePom([res.textEdit]);
             resolve(res);
         });
@@ -232,7 +235,7 @@ export class MiVisualizerRpcManager implements MIVisualizerAPI {
     async getDeployPluginDetails(): Promise<MavenDeployPluginDetails> {
         return new Promise(async (resolve) => {
             const langClient = await MILanguageClient.getInstance(this.projectUri);
-            const res = await langClient.getDeployPluginDetails();
+            const res = await langClient.getDeployPluginDetails(this.projectUri);
             resolve(res);
         });
     }
@@ -240,7 +243,7 @@ export class MiVisualizerRpcManager implements MIVisualizerAPI {
     async removeDeployPlugin(): Promise<MavenDeployPluginDetails> {
         return new Promise(async (resolve) => {
             const langClient = await MILanguageClient.getInstance(this.projectUri);
-            const res = await langClient.removeDeployPlugin();
+            const res = await langClient.removeDeployPlugin(this.projectUri);
             if (res.range.start.line !== 0 && res.range.start.character !== 0) {
                 await this.updatePom([res]);
             }
@@ -301,7 +304,7 @@ export class MiVisualizerRpcManager implements MIVisualizerAPI {
     async updateProperties(params: UpdatePropertiesRequest): Promise<boolean> {
         return new Promise(async (resolve) => {
             const langClient = await MILanguageClient.getInstance(this.projectUri);
-            const res = await langClient.updateProperties(params);
+            const res = await langClient.updateProperties({ ...params, projectUri: this.projectUri });
             await this.updatePom(res.textEdits);
             resolve(true);
         })
@@ -317,7 +320,7 @@ export class MiVisualizerRpcManager implements MIVisualizerAPI {
         return new Promise(async (resolve) => {
             let reloadDependenciesResult = true;
             const langClient = await MILanguageClient.getInstance(this.projectUri);
-            const updateDependenciesResult = await langClient?.updateConnectorDependencies();
+            const updateDependenciesResult = await langClient?.updateConnectorDependencies(this.projectUri);
             if (!updateDependenciesResult.toLowerCase().startsWith("success")) {              
                 const connectorsNotDownloaded: string[] = [];
                 const connectorsFromIntegrationProjectDeps: string[] = [];
@@ -364,7 +367,7 @@ export class MiVisualizerRpcManager implements MIVisualizerAPI {
                 ];
                 
                 if (allFailedDependencies.length > 0 && params?.newDependencies && params.newDependencies.length > 0) {
-                    const projectDetails = await langClient.getProjectDetails();
+                    const projectDetails = await langClient.getProjectDetails(this.projectUri);
                     const existingDependencies = projectDetails.dependencies || [];
                     const allExistingDeps = [
                         ...(existingDependencies.connectorDependencies || []),
@@ -437,7 +440,7 @@ export class MiVisualizerRpcManager implements MIVisualizerAPI {
         return new Promise(async (resolve) => {
             const langClient = await MILanguageClient.getInstance(this.projectUri);
 
-            const projectDetails = await langClient.getProjectDetails();
+            const projectDetails = await langClient.getProjectDetails(this.projectUri);
             const existingDependencies = projectDetails.dependencies || [];
 
             const updatedDependencies: any[] = [];
@@ -462,7 +465,7 @@ export class MiVisualizerRpcManager implements MIVisualizerAPI {
             });
 
             if (updatedDependencies.length > 0) {
-                const res = await langClient.updateDependencies({ dependencies: updatedDependencies });
+                const res = await langClient.updateDependencies({ dependencies: updatedDependencies, projectUri: this.projectUri });
                 await this.updatePom(res.textEdits);
             }
 
@@ -479,7 +482,7 @@ export class MiVisualizerRpcManager implements MIVisualizerAPI {
     async getDependencyStatusList(): Promise<DependencyStatusResponse> {
         return new Promise(async (resolve) => {
             const langClient = await MILanguageClient.getInstance(this.projectUri);
-            const res = await langClient.getDependencyStatusList();
+            const res = await langClient.getDependencyStatusList(this.projectUri);
             resolve(res);
         });
     }
@@ -535,7 +538,7 @@ export class MiVisualizerRpcManager implements MIVisualizerAPI {
     async updateConnectorDependencies(): Promise<string> {
         return new Promise(async (resolve) => {
             const langClient = await MILanguageClient.getInstance(this.projectUri);
-            const res = await langClient.updateConnectorDependencies();
+            const res = await langClient.updateConnectorDependencies(this.projectUri);
             await extractCAppDependenciesAsProjects(this.projectUri);
             resolve(res);
         });
@@ -543,7 +546,7 @@ export class MiVisualizerRpcManager implements MIVisualizerAPI {
 
     async refetchIntegrationProjectDependencies(): Promise<string> {
         const langClient = await MILanguageClient.getInstance(this.projectUri);
-        const res = await langClient.refetchIntegrationProjectDependencies();
+        const res = await langClient.refetchIntegrationProjectDependencies(this.projectUri);
         await loadCAppResources(this.projectUri, langClient);
         return res;
     }
@@ -551,7 +554,7 @@ export class MiVisualizerRpcManager implements MIVisualizerAPI {
     async updateDependenciesFromOverview(params: UpdateDependenciesRequest): Promise<boolean> {
         return new Promise(async (resolve) => {
             const langClient = await MILanguageClient.getInstance(this.projectUri);
-            const res = await langClient.updateDependencies({ dependencies: params.dependencies });
+            const res = await langClient.updateDependencies({ dependencies: params.dependencies, projectUri: this.projectUri });
             await this.updatePom(res.textEdits);
             resolve(true);
         });
@@ -633,6 +636,63 @@ export class MiVisualizerRpcManager implements MIVisualizerAPI {
     downloadSelectedSampleFromGithub(params: SampleDownloadRequest): void {
         const url = 'https://mi-connectors.wso2.com/samples/samples/';
         handleOpenFile(this.projectUri, params.zipFileName, url);
+    }
+
+    async getRecentProjects(): Promise<RecentProjectsResponse> {
+        try {
+            const recentlyOpened = await commands.executeCommand<any>("_workbench.getRecentlyOpened");
+            const workspaceItems: any[] = [
+                ...(Array.isArray(recentlyOpened?.workspaces) ? recentlyOpened.workspaces : []),
+                ...(Array.isArray(recentlyOpened?.folders) ? recentlyOpened.folders : []),
+            ];
+            const openPaths = new Set((workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath));
+            const seenPaths = new Set<string>();
+            const candidates: RecentProjectEntry[] = [];
+
+            for (const item of workspaceItems) {
+                const project = this.normalizeRecentProject(item);
+                if (!project || project.isWorkspace || seenPaths.has(project.path) || openPaths.has(project.path)) {
+                    continue;
+                }
+                seenPaths.add(project.path);
+                candidates.push(project);
+            }
+
+            const miProjectFlags = await Promise.all(candidates.map(project => isMiProject(project.path)));
+            const projects = candidates.filter((_, index) => miProjectFlags[index]).slice(0, 8);
+
+            return { projects };
+        } catch {
+            return { projects: [] };
+        }
+    }
+
+    async openRecentProject(params: OpenRecentProjectRequest): Promise<void> {
+        if (!params.path) {
+            return;
+        }
+
+        if (!fs.existsSync(params.path)) {
+            window.showErrorMessage(`Project not found: ${params.path}`);
+            return;
+        }
+
+        const selection = await window.showInformationMessage('Where would you like to open the project?',
+                { modal: true },
+                'Current Window',
+                'New Window'
+        );
+
+        if (!selection) {
+            return;
+        }
+
+        if (selection === "New Window") {
+            commands.executeCommand('vscode.openFolder', Uri.file(params.path), true);
+        } else {
+            const folders = workspace.workspaceFolders ?? [];
+            workspace.updateWorkspaceFolders(folders.length, 0, { uri: Uri.file(params.path) });
+        }
     }
 
     async addConfigurable(params: AddConfigurableRequest): Promise<void> {
@@ -723,14 +783,14 @@ export class MiVisualizerRpcManager implements MIVisualizerAPI {
 
     async showNotification(params: NotificationRequest): Promise<NotificationResponse> {
         return new Promise(async (resolve) => {
-            const { message, options, type = "info" } = params;
+            const { message, options, type = "info", modal = false } = params;
             let selection: string | undefined;
             if (type === "info") {
-                selection = await window.showInformationMessage(message, ...options ?? []);
+                selection = await window.showInformationMessage(message, { modal }, ...options ?? []);
             } else if (type === "warning") {
-                selection = await window.showWarningMessage(message, ...options ?? []);
+                selection = await window.showWarningMessage(message, { modal }, ...options ?? []);
             } else {
-                selection = await window.showErrorMessage(message, ...options ?? []);
+                selection = await window.showErrorMessage(message, { modal }, ...options ?? []);
             }
 
             resolve({ selection });
@@ -908,7 +968,7 @@ export class MiVisualizerRpcManager implements MIVisualizerAPI {
     async getProjectOverview(params: ProjectStructureRequest): Promise<ProjectOverviewResponse> {
         return new Promise(async (resolve) => {
             const langClient = await MILanguageClient.getInstance(this.projectUri);
-            const res = await langClient.getOverviewModel();
+            const res = await langClient.getOverviewModel(this.projectUri);
             resolve(res);
         });
     }
@@ -1025,7 +1085,8 @@ export class MiVisualizerRpcManager implements MIVisualizerAPI {
         if (filePath && filePath.length > 0) {
             const connectorGenRequest = {
                 openAPIPath: filePath,
-                connectorProjectPath: path.join(this.projectUri, 'target')
+                connectorProjectPath: path.join(this.projectUri, 'target'),
+                projectUri: this.projectUri
             };
             const { buildStatus, connectorPath, errorMessage } = await langClient.generateConnector(connectorGenRequest);
             if (buildStatus) {
@@ -1069,7 +1130,7 @@ export class MiVisualizerRpcManager implements MIVisualizerAPI {
         return new Promise(async (resolve) => {
             const langClient = await MILanguageClient.getInstance(this.projectUri);
 
-            const projectDetails = await langClient.getProjectDetails();
+            const projectDetails = await langClient.getProjectDetails(this.projectUri);
             const existingDependencies = projectDetails.dependencies || [];
 
             const updatedDependencies: any[] = [];
@@ -1098,7 +1159,7 @@ export class MiVisualizerRpcManager implements MIVisualizerAPI {
             });
             
             if (updatedDependencies.length > 0) {
-                const res = await langClient.updateDependencies({ dependencies: updatedDependencies });
+                const res = await langClient.updateDependencies({ dependencies: updatedDependencies, projectUri: this.projectUri });
                 await this.updatePom(res.textEdits);
                 resolve(true);
             }
@@ -1221,5 +1282,55 @@ export class MiVisualizerRpcManager implements MIVisualizerAPI {
     async getMcpToolSuggestion(params: McpToolSuggestionRequest): Promise<McpToolSuggestionResponse> {
         const aiManager = new MIAIPanelRpcManager(this.projectUri);
         return aiManager.getMcpToolSuggestion(params);
+    }
+
+    private normalizeRecentProject(item: any): RecentProjectEntry | undefined {
+        const folderPath = this.extractFsPath(item?.folderUri);
+        const workspacePath = this.extractFsPath(item?.workspace?.configPath ?? item?.workspace?.uri);
+        const resolvedPath = folderPath ?? workspacePath;
+        if (!resolvedPath) {
+            return undefined;
+        }
+
+        const label = typeof item?.label === "string" && item.label.trim().length > 0
+            ? item.label.trim()
+            : path.basename(resolvedPath);
+
+        return {
+            path: resolvedPath,
+            label: label || resolvedPath,
+            description: resolvedPath,
+            isWorkspace: !folderPath && !!workspacePath,
+        };
+    }
+
+    private extractFsPath(uri: any): string | undefined {
+        if (!uri) {
+            return undefined;
+        }
+        if (uri instanceof Uri) {
+            return uri.fsPath;
+        }
+        if (typeof uri === "string") {
+            if (uri.startsWith("file:")) {
+                return Uri.parse(uri).fsPath;
+            }
+            return uri;
+        }
+        if (typeof uri === "object") {
+            if (typeof uri.fsPath === "string" && uri.fsPath.length > 0) {
+                return uri.fsPath;
+            }
+            if (typeof uri.path === "string" && uri.path.length > 0) {
+                if (uri.scheme === "file") {
+                    return Uri.from({ scheme: "file", path: uri.path }).fsPath;
+                }
+                return uri.path;
+            }
+            if (typeof uri.external === "string" && uri.external.startsWith("file:")) {
+                return Uri.parse(uri.external).fsPath;
+            }
+        }
+        return undefined;
     }
 }

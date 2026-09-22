@@ -14,8 +14,14 @@
 
 package org.eclipse.lemminx.extensions.synapse;
 
+import org.eclipse.lemminx.MockXMLLanguageServer;
 import org.eclipse.lemminx.SynapseLanguageService;
+import org.eclipse.lemminx.XMLTextDocumentService;
 import org.eclipse.lemminx.commons.TextDocument;
+import org.eclipse.lemminx.customservice.synapse.ProjectContext;
+import org.eclipse.lemminx.customservice.synapse.WorkspaceManager;
+import org.eclipse.lemminx.customservice.synapse.connectors.ConnectorHolder;
+import org.eclipse.lemminx.customservice.synapse.resourceFinder.AbstractResourceFinder;
 import org.eclipse.lemminx.customservice.synapse.resourceFinder.NewProjectResourceFinder;
 import org.eclipse.lemminx.customservice.synapse.utils.Utils;
 import org.eclipse.lemminx.dom.DOMDocument;
@@ -1675,6 +1681,8 @@ public class SynapseDiagnosticsParticipantTest {
     // ===== Cross-project reference resolution (pom.xml dependencies) =====
 
     private String originalUserHome;
+    private WorkspaceManager liveWorkspaceManager;
+    private final List<String> registeredProjectUris = new ArrayList<>();
 
     @AfterEach
     public void restoreUserHome() {
@@ -1682,19 +1690,44 @@ public class SynapseDiagnosticsParticipantTest {
             System.setProperty("user.home", originalUserHome);
             originalUserHome = null;
         }
-        SynapseLanguageService.setLoadedResourceFinder(null);
+        // Unregister all projects so the next test again resolves no project, as it would in a fresh process.
+        if (liveWorkspaceManager != null) {
+            registeredProjectUris.forEach(liveWorkspaceManager::removeProject);
+            liveWorkspaceManager = null;
+        }
+        registeredProjectUris.clear();
         SynapseDiagnosticsParticipant.clearSkipCrossFileValidation();
     }
 
     /**
-     * Simulates what {@link SynapseLanguageService#init} does for dependent projects:
-     * loads them via a real finder and publishes it so the diagnostics participant
-     * can see the resulting map through {@link SynapseLanguageService#getLoadedDependentResources()}.
+     * Returns the {@link WorkspaceManager} that {@link SynapseLanguageService#resolveProjectContext} resolves against, creating it on first use by constructing a real {@link SynapseLanguageService} exactly as production does.
      */
-    private void loadDependentResourcesForProject(Path projectPath) {
+    private WorkspaceManager liveWorkspaceManager() {
+        if (liveWorkspaceManager == null) {
+            MockXMLLanguageServer server = new MockXMLLanguageServer();
+            new SynapseLanguageService((XMLTextDocumentService) server.getTextDocumentService(), server);
+            liveWorkspaceManager = server.getWorkspaceManager();
+        }
+        return liveWorkspaceManager;
+    }
+
+    /**
+     * Registers {@code projectPath} as an open project with its dependent (.car) resources preloaded, via a real {@link ProjectContext} whose resource finder alone is overridden to skip the costly {@code initProject}; must be called after {@code user.home} is redirected since the finder reads the dependency cache from under it.
+     */
+    private void registerProjectWithDependencies(Path projectPath) {
         NewProjectResourceFinder finder = new NewProjectResourceFinder();
+        finder.setConnectorHolder(new ConnectorHolder());
         finder.loadDependentResources(projectPath.toString());
-        SynapseLanguageService.setLoadedResourceFinder(finder);
+
+        ProjectContext context = new ProjectContext(projectPath.toString(), false, "4.4.0") {
+            @Override
+            public AbstractResourceFinder getResourceFinder() {
+                return finder;
+            }
+        };
+
+        liveWorkspaceManager().addProject(projectPath.toString(), context);
+        registeredProjectUris.add(projectPath.toString());
     }
 
     /**
@@ -1737,7 +1770,7 @@ public class SynapseDiagnosticsParticipantTest {
         Files.writeString(depSequence,
                 "<sequence xmlns=\"" + SYNAPSE_NS + "\" name=\"fromDep\"><log/></sequence>");
 
-        loadDependentResourcesForProject(consumer);
+        registerProjectWithDependencies(consumer);
         List<Diagnostic> diags = diagnoseAtPath(xml, apiXml);
         List<Diagnostic> unresolved = diagnosticsWithCode(diags, "UnresolvedArtifactReference");
         assertTrue(unresolved.isEmpty(),
@@ -1766,11 +1799,53 @@ public class SynapseDiagnosticsParticipantTest {
         Files.writeString(depSequence,
                 "<sequence xmlns=\"" + SYNAPSE_NS + "\" name=\"somethingElse\"><log/></sequence>");
 
-        loadDependentResourcesForProject(consumer);
+        registerProjectWithDependencies(consumer);
         List<Diagnostic> diags = diagnoseAtPath(xml, apiXml);
         List<Diagnostic> unresolved = diagnosticsWithCode(diags, "UnresolvedArtifactReference");
         assertEquals(1, unresolved.size());
         assertTrue(unresolved.get(0).getMessage().contains("reallyDoesNotExist"));
+    }
+
+    /**
+     * Verifies dependent artifacts are scoped per project: a document in one open project must not resolve against another open project's {@code .car} dependencies.
+     */
+    @Test
+    public void testDependencyOfOneProjectDoesNotResolveInAnother(@TempDir Path tempDir) throws Exception {
+        originalUserHome = System.getProperty("user.home");
+        System.setProperty("user.home", tempDir.toString());
+
+        // Only 'withDep' has a dependency supplying 'fromDep'; 'noDep' has none.
+        Path withDep = tempDir.resolve("withDep");
+        Path noDep = tempDir.resolve("noDep");
+        String xml = "<api xmlns=\"" + SYNAPSE_NS + "\" name=\"cvh\" context=\"/cvh\">"
+                + "<resource methods=\"GET\" uri-template=\"/\">"
+                + "<inSequence><sequence key=\"fromDep\"/></inSequence>"
+                + "</resource></api>";
+
+        String hash = Utils.getHash(withDep.toString());
+        Path depSequence = tempDir.resolve(".wso2-mi/integration-project-dependencies")
+                .resolve("withDep_" + hash)
+                .resolve("Extracted/dep/src/main/wso2mi/artifacts/sequences/fromDep-1.0.0.xml");
+        Files.createDirectories(depSequence.getParent());
+        Files.writeString(depSequence,
+                "<sequence xmlns=\"" + SYNAPSE_NS + "\" name=\"fromDep\"><log/></sequence>");
+
+        registerProjectWithDependencies(withDep);
+        registerProjectWithDependencies(noDep);
+
+        // Sanity check: the reference does resolve for the project that owns the dependency.
+        List<Diagnostic> owning = diagnoseAtPath(xml,
+                withDep.resolve("src/main/wso2mi/artifacts/apis/cvh.xml"));
+        assertTrue(diagnosticsWithCode(owning, "UnresolvedArtifactReference").isEmpty(),
+                "'fromDep' must resolve in the project whose dependency declares it");
+
+        // The actual assertion: the same reference must stay unresolved in the other project.
+        List<Diagnostic> foreign = diagnoseAtPath(xml,
+                noDep.resolve("src/main/wso2mi/artifacts/apis/cvh.xml"));
+        List<Diagnostic> unresolved = diagnosticsWithCode(foreign, "UnresolvedArtifactReference");
+        assertEquals(1, unresolved.size(),
+                "'fromDep' belongs to another project's dependencies and must not resolve here");
+        assertTrue(unresolved.get(0).getMessage().contains("fromDep"));
     }
 
     // ===== skipCrossFileValidation opt-out (Change 1) =====

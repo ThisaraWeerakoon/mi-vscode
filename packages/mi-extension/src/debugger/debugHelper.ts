@@ -463,6 +463,7 @@ export async function startServer(projectUri: string, serverPath: string, isDebu
         try {
             runCommand = await getRunCommand(serverPath, isDebug);
         } catch (error) {
+            // A path that can't be quoted for the shell (see escapeShellArg) fails here rather than being handed over half-parsed and timing out later.
             const message = `Server startup failed: ${error instanceof Error ? error.message : error}`;
             serverLog(message);
             reject(message);
@@ -483,11 +484,12 @@ export async function startServer(projectUri: string, serverPath: string, isDebu
             try {
                 escapedVmArgs = vmArgs.map(escapeShellArg);
             } catch (error) {
-                const message = `Server startup failed: ${(error as Error).message}`;
+                const message = `Server startup failed: ${error instanceof Error ? error.message : error}`;
                 serverLog(message);
                 reject(message);
                 return;
             }
+
             serverProcess = child_process.spawn(`${runCommand}`, escapedVmArgs, { shell: true, env: envVariables });
             showServerOutputChannel();
 
@@ -579,7 +581,7 @@ export async function executeTasks(projectUri: string, serverPath: string, isDeb
     const maxTimeout = (Number.isFinite(Number(configuredTimeout)) && Number(configuredTimeout) > 0) ? Number(configuredTimeout) * 1000 : 120000;
     return new Promise<void>(async (resolve, reject) => {
         const langClient = await MILanguageClient.getInstance(projectUri);
-        const isTerminated = await langClient.shutdownTryoutServer();
+        const isTerminated = await langClient.shutdownTryoutServer(projectUri);
         if (!isTerminated) {
             reject('Failed to terminate the tryout server. Kill the server manually and try again.');
         }
@@ -743,31 +745,64 @@ export function isADiagramView(projectUri: string): boolean {
 // The micro-integrator.bat is not supported to read java variables appended by the user in the MI 4.2.0 version.
 // As a workaround, MI team requested that we create a temporary batch file with the required java variables and run the server.
 let tempWindowsDebug;
-export function createTempDebugBatchFile(batchFilePath: string, binPath: string): Promise<string> {
-    return new Promise((resolve, reject) => {
-        const destFilePath = path.join(binPath, 'micro-integrator-debug.bat');
-        fs.copyFileSync(batchFilePath, destFilePath);
-        tempWindowsDebug = destFilePath;
 
-        fs.readFile(destFilePath, 'utf8', (err, data) => {
-            if (err) {
-                logDebug(`Error reading the micro-integrator-debug.bat file: ${err}`, LogLevel.ERROR);
-                reject(`Error while reading the micro-integrator-debug.bat file: ${err}`);
-                return;
+const FILE_LOCK_RETRY_ATTEMPTS = 5;
+const FILE_LOCK_RETRY_DELAY_MS = 2000;
+
+function isTransientFileLockError(err: NodeJS.ErrnoException): boolean {
+    return err?.code === 'EBUSY' || err?.code === 'EPERM' || err?.code === 'EACCES';
+}
+
+function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withFileLockRetry<T>(operation: () => T): Promise<T> {
+    let lastError: NodeJS.ErrnoException | undefined;
+    for (let attempt = 1; attempt <= FILE_LOCK_RETRY_ATTEMPTS; attempt++) {
+        try {
+            return operation();
+        } catch (err) {
+            lastError = err as NodeJS.ErrnoException;
+            if (!isTransientFileLockError(lastError) || attempt === FILE_LOCK_RETRY_ATTEMPTS) {
+                throw lastError;
             }
+            logDebug(`File locked while preparing micro-integrator-debug.bat (attempt ${attempt}/${FILE_LOCK_RETRY_ATTEMPTS}): ${lastError}. Retrying...`, LogLevel.WARN);
+            await delay(FILE_LOCK_RETRY_DELAY_MS);
+        }
+    }
+    throw lastError;
+}
 
-            const updatedContent = data.replace('CMD_LINE_ARGS=', 'CMD_LINE_ARGS=-Desb.debug=true ');
+export async function createTempDebugBatchFile(batchFilePath: string, binPath: string): Promise<string> {
+    const destFilePath = path.join(binPath, 'micro-integrator-debug.bat');
 
-            fs.writeFile(destFilePath, updatedContent, 'utf8', (err) => {
-                if (err) {
-                    logDebug(`Error writing the micro-integrator-debug.bat file: ${err}`, LogLevel.ERROR);
-                    reject(`Error while updating the micro-integrator-debug.bat file: ${err}`);
-                    return;
-                }
-                resolve(destFilePath);
-            });
-        });
-    });
+    try {
+        await withFileLockRetry(() => fs.copyFileSync(batchFilePath, destFilePath));
+    } catch (err) {
+        logDebug(`Error copying to the micro-integrator-debug.bat file: ${err}`, LogLevel.ERROR);
+        throw `Error while creating the micro-integrator-debug.bat file: ${err}`;
+    }
+    tempWindowsDebug = destFilePath;
+
+    let data: string;
+    try {
+        data = await withFileLockRetry(() => fs.readFileSync(destFilePath, 'utf8'));
+    } catch (err) {
+        logDebug(`Error reading the micro-integrator-debug.bat file: ${err}`, LogLevel.ERROR);
+        throw `Error while reading the micro-integrator-debug.bat file: ${err}`;
+    }
+
+    const updatedContent = data.replace('CMD_LINE_ARGS=', 'CMD_LINE_ARGS=-Desb.debug=true ');
+
+    try {
+        await withFileLockRetry(() => fs.writeFileSync(destFilePath, updatedContent, 'utf8'));
+    } catch (err) {
+        logDebug(`Error writing the micro-integrator-debug.bat file: ${err}`, LogLevel.ERROR);
+        throw `Error while updating the micro-integrator-debug.bat file: ${err}`;
+    }
+
+    return destFilePath;
 }
 
 export function removeTempDebugBatchFile() {
@@ -878,4 +913,10 @@ async function compareFilesByMD5(file1: string, file2: string): Promise<boolean>
             console.error('Error comparing files:', error);
         }
     });
+}
+
+export async function getConfigurableEntries(projectUri: string): Promise<{key: string; type: string; value: string; range: any; }[]> {
+    const langClient = await MILanguageClient.getInstance(projectUri);
+    const res = await langClient.getConfigurableList(projectUri);
+    return res;
 }
